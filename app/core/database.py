@@ -20,7 +20,12 @@ class Neo4jDriver:
             print("🛑 Disconnected from Neo4j")
 
     def get_session(self):
+        if self._driver is None:
+            raise RuntimeError(
+                "Database driver is not initialized. Call connect() before get_session()."
+            )
         return self._driver.session()
+
 
 # Create a single instance to use everywhere
 db = Neo4jDriver()
