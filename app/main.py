@@ -1,14 +1,17 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.core.database import db
+import asyncio
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Connect to DB
-    db.connect()
-    yield
-    # Shutdown: Close DB
-    db.close()
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, db.connect)
+        yield
+    finally:
+        await loop.run_in_executor(None, db.close)
 
 app = FastAPI(title="Guru Setu API", lifespan=lifespan)
 

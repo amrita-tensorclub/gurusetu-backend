@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     # Security
     JWT_SECRET_KEY: str
     ALGORITHM: str = "HS256"
+    
+    OPENAI_API_KEY: str
 
     class Config:
         env_file = ".env"
