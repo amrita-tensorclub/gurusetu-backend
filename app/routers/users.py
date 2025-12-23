@@ -11,13 +11,11 @@ def update_student_profile(
     data: StudentProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # FIX: Add .lower() to handle "Student" vs "student"
     if current_user["role"].lower() != "student":
         raise HTTPException(
             status_code=403,
             detail="Only students can update student profiles",
         )
-    # ... rest of the code remains the same
 
     user_id = current_user["user_id"]
     session = db.get_session()
@@ -48,24 +46,29 @@ def update_student_profile(
             MERGE (u)-[:INTERESTED_IN]->(i)
         )
 
-        RETURN u.user_id
+        RETURN u.user_id AS user_id
         """
 
-        session.run(
+        result = session.run(
             query,
             user_id=user_id,
-            name=data.name,                 # <--- Added
-            profile_picture=data.profile_picture, # <--- Added
+            name=data.name,
+            profile_picture=data.profile_picture,
             phone=data.phone,
             dept=data.department,
             batch=data.batch,
             bio=data.bio,
             skills=data.skills,
             interests=data.interests,
-        )
+        ).single()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
 
         return {"message": "Student profile updated successfully"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -77,7 +80,6 @@ def update_faculty_profile(
     data: FacultyProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # FIX: Add .lower() to be case-insensitive
     if current_user["role"].lower() != "faculty":
         raise HTTPException(
             status_code=403,
@@ -112,10 +114,10 @@ def update_faculty_profile(
             MERGE (u)-[:INTERESTED_IN]->(i)
         )
 
-        RETURN u.user_id
+        RETURN u.user_id AS user_id
         """
 
-        session.run(
+        result = session.run(
             query,
             user_id=user_id,
             name=data.name,
@@ -129,11 +131,16 @@ def update_faculty_profile(
             cabin_floor=data.cabin_floor,
             cabin_number=data.cabin_number,
             qualifications=data.qualifications,
-            domain_interests=data.domain_interests 
-        )
+            domain_interests=data.domain_interests,
+        ).single()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
 
         return {"message": "Faculty profile updated successfully"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
