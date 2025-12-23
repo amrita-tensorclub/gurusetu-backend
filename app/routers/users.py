@@ -11,8 +11,7 @@ def update_student_profile(
     data: StudentProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # Authorization: only students
-    if current_user["role"] != "student":
+    if current_user["role"].lower() != "student":
         raise HTTPException(
             status_code=403,
             detail="Only students can update student profiles",
@@ -24,7 +23,9 @@ def update_student_profile(
     try:
         query = """
         MATCH (u:User {user_id: $user_id})
-        SET u.phone = $phone,
+        SET u.name = COALESCE($name, u.name),
+            u.profile_picture = COALESCE($profile_picture, u.profile_picture),
+            u.phone = $phone,
             u.department = $dept,
             u.batch = $batch,
             u.bio = $bio
@@ -45,12 +46,14 @@ def update_student_profile(
             MERGE (u)-[:INTERESTED_IN]->(i)
         )
 
-        RETURN u.user_id
+        RETURN u.user_id AS user_id
         """
 
         result = session.run(
             query,
             user_id=user_id,
+            name=data.name,
+            profile_picture=data.profile_picture,
             phone=data.phone,
             dept=data.department,
             batch=data.batch,
@@ -77,8 +80,7 @@ def update_faculty_profile(
     data: FacultyProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # Authorization: only faculty
-    if current_user["role"] != "faculty":
+    if current_user["role"].lower() != "faculty":
         raise HTTPException(
             status_code=403,
             detail="Only faculty can update faculty profiles",
@@ -90,7 +92,9 @@ def update_faculty_profile(
     try:
         query = """
         MATCH (u:User {user_id: $user_id})
-        SET u.phone = $phone,
+        SET u.name = COALESCE($name, u.name),
+            u.profile_picture = COALESCE($profile_picture, u.profile_picture),
+            u.phone = $phone,
             u.department = $dept,
             u.bio = $bio,
             u.designation = $designation,
@@ -99,12 +103,25 @@ def update_faculty_profile(
             u.cabin_floor = $cabin_floor,
             u.cabin_number = $cabin_number,
             u.qualifications = $qualifications
-        RETURN u.user_id
+
+        WITH u
+        OPTIONAL MATCH (u)-[r:INTERESTED_IN]->()
+        DELETE r
+
+        WITH u
+        FOREACH (interest IN $domain_interests |
+            MERGE (i:Concept {name: toLower(interest)})
+            MERGE (u)-[:INTERESTED_IN]->(i)
+        )
+
+        RETURN u.user_id AS user_id
         """
 
         result = session.run(
             query,
             user_id=user_id,
+            name=data.name,
+            profile_picture=data.profile_picture,
             phone=data.phone,
             dept=data.department,
             bio=data.bio,
@@ -114,6 +131,7 @@ def update_faculty_profile(
             cabin_floor=data.cabin_floor,
             cabin_number=data.cabin_number,
             qualifications=data.qualifications,
+            domain_interests=data.domain_interests,
         ).single()
 
         if not result:

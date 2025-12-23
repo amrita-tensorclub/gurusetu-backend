@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from app.core.database import db
 import asyncio
 
-# Import all your routers
-from app.routers import auth, users, openings, recommendations, student_projects
+# --- FIX IS HERE: Add 'faculty_projects' to the end of this list ---
+from app.routers import auth, users, openings, recommendations, student_projects, faculty_projects
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,14 +18,16 @@ async def lifespan(app: FastAPI):
     yield
     db.close()
 app = FastAPI(title="Guru Setu API", lifespan=lifespan)
+@app.get("/")
+def read_root():
+    return {"message": "Guru Setu Backend is Running 🚀"}
 
-# Register Routers (Connect the "wires")
+# Register Routers
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(users.router, prefix="/users", tags=["Profiles"])
 app.include_router(openings.router, prefix="/openings", tags=["Openings"])
 app.include_router(recommendations.router, prefix="/recommend", tags=["AI"])
-app.include_router(student_projects.router, prefix="/student-projects", tags=["Portfolio"])
 
-@app.get("/")
-def read_root():
-    return {"message": "Guru Setu Backend is Running 🚀"}
+# Project Routers
+app.include_router(student_projects.router, prefix="/student-projects", tags=["Student Portfolio"])
+app.include_router(faculty_projects.router, prefix="/faculty-projects", tags=["Faculty Research"])
