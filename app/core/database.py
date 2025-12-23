@@ -34,5 +34,4 @@ class Neo4jDriver:
         return self._driver.session()
 
 
-# Create a single instance to use everywhere
 db = Neo4jDriver()

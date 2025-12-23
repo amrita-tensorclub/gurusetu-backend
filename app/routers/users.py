@@ -1,0 +1,129 @@
+from fastapi import APIRouter, HTTPException, Depends
+from app.core.database import db
+from app.core.security import get_current_user
+from app.models.user import StudentProfileUpdate, FacultyProfileUpdate
+
+router = APIRouter()
+
+
+@router.put("/student/profile")
+def update_student_profile(
+    data: StudentProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    # Authorization: only students
+    if current_user["role"] != "student":
+        raise HTTPException(
+            status_code=403,
+            detail="Only students can update student profiles",
+        )
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+
+    try:
+        query = """
+        MATCH (u:User {user_id: $user_id})
+        SET u.phone = $phone,
+            u.department = $dept,
+            u.batch = $batch,
+            u.bio = $bio
+
+        WITH u
+        OPTIONAL MATCH (u)-[r:HAS_SKILL|INTERESTED_IN]->()
+        DELETE r
+
+        WITH u
+        FOREACH (skill IN $skills |
+            MERGE (s:Concept {name: toLower(skill)})
+            MERGE (u)-[:HAS_SKILL]->(s)
+        )
+
+        WITH u
+        FOREACH (interest IN $interests |
+            MERGE (i:Concept {name: toLower(interest)})
+            MERGE (u)-[:INTERESTED_IN]->(i)
+        )
+
+        RETURN u.user_id
+        """
+
+        result = session.run(
+            query,
+            user_id=user_id,
+            phone=data.phone,
+            dept=data.department,
+            batch=data.batch,
+            bio=data.bio,
+            skills=data.skills,
+            interests=data.interests,
+        ).single()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"message": "Student profile updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.put("/faculty/profile")
+def update_faculty_profile(
+    data: FacultyProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    # Authorization: only faculty
+    if current_user["role"] != "faculty":
+        raise HTTPException(
+            status_code=403,
+            detail="Only faculty can update faculty profiles",
+        )
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+
+    try:
+        query = """
+        MATCH (u:User {user_id: $user_id})
+        SET u.phone = $phone,
+            u.department = $dept,
+            u.bio = $bio,
+            u.designation = $designation,
+            u.office_hours = $office_hours,
+            u.cabin_block = $cabin_block,
+            u.cabin_floor = $cabin_floor,
+            u.cabin_number = $cabin_number,
+            u.qualifications = $qualifications
+        RETURN u.user_id
+        """
+
+        result = session.run(
+            query,
+            user_id=user_id,
+            phone=data.phone,
+            dept=data.department,
+            bio=data.bio,
+            designation=data.designation,
+            office_hours=data.office_hours,
+            cabin_block=data.cabin_block,
+            cabin_floor=data.cabin_floor,
+            cabin_number=data.cabin_number,
+            qualifications=data.qualifications,
+        ).single()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"message": "Faculty profile updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
