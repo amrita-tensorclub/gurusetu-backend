@@ -11,12 +11,13 @@ def update_student_profile(
     data: StudentProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # Authorization: only students
-    if current_user["role"] != "student":
+    # FIX: Add .lower() to handle "Student" vs "student"
+    if current_user["role"].lower() != "student":
         raise HTTPException(
             status_code=403,
             detail="Only students can update student profiles",
         )
+    # ... rest of the code remains the same
 
     user_id = current_user["user_id"]
     session = db.get_session()
@@ -24,7 +25,9 @@ def update_student_profile(
     try:
         query = """
         MATCH (u:User {user_id: $user_id})
-        SET u.phone = $phone,
+        SET u.name = COALESCE($name, u.name),
+            u.profile_picture = COALESCE($profile_picture, u.profile_picture),
+            u.phone = $phone,
             u.department = $dept,
             u.batch = $batch,
             u.bio = $bio
@@ -48,24 +51,21 @@ def update_student_profile(
         RETURN u.user_id
         """
 
-        result = session.run(
+        session.run(
             query,
             user_id=user_id,
+            name=data.name,                 # <--- Added
+            profile_picture=data.profile_picture, # <--- Added
             phone=data.phone,
             dept=data.department,
             batch=data.batch,
             bio=data.bio,
             skills=data.skills,
             interests=data.interests,
-        ).single()
-
-        if not result:
-            raise HTTPException(status_code=404, detail="User not found")
+        )
 
         return {"message": "Student profile updated successfully"}
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -77,8 +77,8 @@ def update_faculty_profile(
     data: FacultyProfileUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    # Authorization: only faculty
-    if current_user["role"] != "faculty":
+    # FIX: Add .lower() to be case-insensitive
+    if current_user["role"].lower() != "faculty":
         raise HTTPException(
             status_code=403,
             detail="Only faculty can update faculty profiles",
@@ -90,7 +90,9 @@ def update_faculty_profile(
     try:
         query = """
         MATCH (u:User {user_id: $user_id})
-        SET u.phone = $phone,
+        SET u.name = COALESCE($name, u.name),
+            u.profile_picture = COALESCE($profile_picture, u.profile_picture),
+            u.phone = $phone,
             u.department = $dept,
             u.bio = $bio,
             u.designation = $designation,
@@ -99,12 +101,25 @@ def update_faculty_profile(
             u.cabin_floor = $cabin_floor,
             u.cabin_number = $cabin_number,
             u.qualifications = $qualifications
+
+        WITH u
+        OPTIONAL MATCH (u)-[r:INTERESTED_IN]->()
+        DELETE r
+
+        WITH u
+        FOREACH (interest IN $domain_interests |
+            MERGE (i:Concept {name: toLower(interest)})
+            MERGE (u)-[:INTERESTED_IN]->(i)
+        )
+
         RETURN u.user_id
         """
 
-        result = session.run(
+        session.run(
             query,
             user_id=user_id,
+            name=data.name,
+            profile_picture=data.profile_picture,
             phone=data.phone,
             dept=data.department,
             bio=data.bio,
@@ -114,15 +129,11 @@ def update_faculty_profile(
             cabin_floor=data.cabin_floor,
             cabin_number=data.cabin_number,
             qualifications=data.qualifications,
-        ).single()
-
-        if not result:
-            raise HTTPException(status_code=404, detail="User not found")
+            domain_interests=data.domain_interests 
+        )
 
         return {"message": "Faculty profile updated successfully"}
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:

@@ -11,7 +11,6 @@ def create_opening(opening: OpeningCreate):
     opening_id = str(uuid.uuid4())
     
     try:
-        # Note: We align the query string with the variable assignment
         query = """
         MATCH (f:User {user_id: $faculty_id})
         
@@ -19,6 +18,10 @@ def create_opening(opening: OpeningCreate):
             id: $opening_id,
             title: $title,
             description: $description,
+            expected_duration: $expected_duration,  // Added
+            target_years: $target_years,            // Added
+            min_cgpa: $min_cgpa,                    // Added
+            deadline: $deadline,                    // Added
             created_at: datetime()
         })
         
@@ -32,16 +35,19 @@ def create_opening(opening: OpeningCreate):
         RETURN o.id as id
         """
         
-        # Run the query
-        result = session.run(query, 
+        session.run(query, 
             faculty_id=opening.faculty_id,
             opening_id=opening_id,
             title=opening.title,
             description=opening.description,
-            skills=opening.required_skills
+            skills=opening.required_skills,
+            expected_duration=opening.expected_duration,
+            target_years=opening.target_years,
+            min_cgpa=opening.min_cgpa,
+            deadline=opening.deadline
         )
         
-        return {"message": "Opening created and linked to Graph!", "opening_id": opening_id}
+        return {"message": "Opening created!", "opening_id": opening_id}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
