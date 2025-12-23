@@ -20,8 +20,14 @@ def register_user(user: UserRegister):
         hashed_pw = hash_password(user.password)
         user_id = str(uuid.uuid4())
         
-        # 3. Dynamic Label Logic (Friend's idea was good, let's keep it safe)
-        role_label = "Student" if user.role.lower() == "student" else "Faculty"
+        # 3. Dynamic Label Logic - validate role explicitly
+        role_lower = user.role.lower()
+        if role_lower == "student":
+            role_label = "Student"
+        elif role_lower == "faculty":
+            role_label = "Faculty"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid role. Must be 'student' or 'faculty'")
 
         # 4. Create Node (Merged Logic: We add roll_no and employee_id now)
         query_create = f"""
