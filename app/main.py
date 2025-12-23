@@ -1,16 +1,22 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.core.database import db
+import asyncio
 
 # Import all your routers
 from app.routers import auth, users, openings, recommendations, student_projects
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, db.connect)
+        yield
+    finally:
+        await loop.run_in_executor(None, db.close)
     db.connect()
     yield
     db.close()
-
 app = FastAPI(title="Guru Setu API", lifespan=lifespan)
 
 # Register Routers (Connect the "wires")
