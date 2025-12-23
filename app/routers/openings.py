@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.models.openings import OpeningCreate
 from app.core.database import db
 import uuid
@@ -11,18 +11,11 @@ def create_opening(opening: OpeningCreate):
     opening_id = str(uuid.uuid4())
     
     try:
-        # 1. Match Faculty
-        # 2. Create Opening Node
-        # 3. Link Faculty -> Opening
-        # 4. Link Opening -> Skills (Concepts)
+        # Note: We align the query string with the variable assignment
         query = """
-        MATCH (f:User:Faculty {user_id: $faculty_id})
-         
-         # 4. Link Opening -> Skills (Concepts)
-         query = """
-         MATCH (f:User:Faculty {user_id: $faculty_id})
-         
-         CREATE (o:Opening {
+        MATCH (f:User {user_id: $faculty_id})
+        
+        CREATE (o:Opening {
             id: $opening_id,
             title: $title,
             description: $description,
@@ -39,6 +32,7 @@ def create_opening(opening: OpeningCreate):
         RETURN o.id as id
         """
         
+        # Run the query
         result = session.run(query, 
             faculty_id=opening.faculty_id,
             opening_id=opening_id,
@@ -47,9 +41,6 @@ def create_opening(opening: OpeningCreate):
             skills=opening.required_skills
         )
         
-        if result.peek() is None:
-            raise HTTPException(status_code=404, detail="Faculty not found")
-
         return {"message": "Opening created and linked to Graph!", "opening_id": opening_id}
         
     except Exception as e:
