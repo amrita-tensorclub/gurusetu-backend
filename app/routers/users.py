@@ -23,14 +23,18 @@ def update_student_profile(data: StudentProfileUpdate):
         DELETE r
 
         WITH u
-        UNWIND $skills as skill
-        MERGE (s:Concept {name: toLower(skill)})
-        MERGE (u)-[:HAS_SKILL]->(s)
-
+        FOREACH (skill IN $skills |
+            MERGE (s:Concept {name: toLower(skill)})
+            MERGE (u)-[:HAS_SKILL]->(s)
+        )
+        
         WITH u
-        UNWIND $interests as interest
-        MERGE (i:Concept {name: toLower(interest)})
-        MERGE (u)-[:INTERESTED_IN]->(i)
+        FOREACH (interest IN $interests |
+            MERGE (i:Concept {name: toLower(interest)})
+            MERGE (u)-[:INTERESTED_IN]->(i)
+        )
+        
+        RETURN u.user_id
         """
         
         session.run(query, 
