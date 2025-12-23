@@ -16,7 +16,9 @@ def create_opening(opening: OpeningCreate):
         # 3. Link Faculty -> Opening
         # 4. Link Opening -> Skills (Concepts)
         query = """
-        MATCH (f:User {user_id: $faculty_id})
+        MATCH (f:User:Faculty {user_id: $faculty_id})
+         
+         CREATE (o:Opening {
         
         CREATE (o:Opening {
             id: $opening_id,
