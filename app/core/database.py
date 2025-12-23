@@ -16,7 +16,7 @@ class Neo4jDriver:
                 auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
             )
             self._driver.verify_connectivity()
-            print("✅ Connected to Neo4j Graph Database")
+            print("Connected to Neo4j Graph Database")
         except Neo4jError as e:
             self._driver = None
             raise RuntimeError(f"Failed to connect to Neo4j: {e}") from e
@@ -24,7 +24,7 @@ class Neo4jDriver:
     def close(self):
         if self._driver:
             self._driver.close()
-            print("🛑 Disconnected from Neo4j")
+            print("Disconnected from Neo4j")
 
     def get_session(self):
         if self._driver is None:
