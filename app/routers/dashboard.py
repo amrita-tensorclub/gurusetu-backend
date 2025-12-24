@@ -2,13 +2,22 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 from app.core.security import get_current_user
 from app.core.database import db
-from app.services.rag_service import recommend_students_for_faculty
+
+# IMPORT THE NEW SERVICES
+from app.services.rag_service import (
+    recommend_students_for_faculty, 
+    recommend_openings_for_student
+)
+
 router = APIRouter()
 
+# ---------------------------------------------------------
+# 1. FACULTY DASHBOARD (Landing Page)
+# ---------------------------------------------------------
 @router.get("/faculty/home")
 def get_faculty_dashboard(current_user: dict = Depends(get_current_user)):
     """
-    Fetches data for the main Faculty Dashboard.
+    Returns data for the Faculty Home Screen.
     """
     if current_user["role"].lower() != "faculty":
         raise HTTPException(status_code=403, detail="Access denied")
@@ -23,59 +32,115 @@ def get_faculty_dashboard(current_user: dict = Depends(get_current_user)):
     }
 
     try:
-        # A. Get User Info
+        # A. User Info
         user_query = "MATCH (u:User {user_id: $user_id}) RETURN u.name as name, u.department as dept, u.profile_picture as pic"
         user_res = session.run(user_query, user_id=user_id).single()
         if user_res:
-            response_data["user_info"] = {
-                "name": user_res["name"], 
-                "department": user_res["dept"],
-                "profile_picture": user_res["pic"]
-            }
+            response_data["user_info"] = user_res.data()
 
-        # --- B. GET AI RECOMMENDATIONS (Replaced Manual Query) ---
-        # We now call the RAG Service directly
-        ai_recommendations = recommend_students_for_faculty(user_id, limit=5)
-        
-        # Map the AI result to your Dashboard format
-        for student in ai_recommendations:
+        # B. AI Recommendations (Using rag_service)
+        # We fetch top 5 students matched to the faculty's interests
+        recs = recommend_students_for_faculty(user_id, limit=5)
+        for r in recs:
             response_data["recommended_students"].append({
-                "student_id": student["student_id"],
-                "name": student["name"],
-                "department": student.get("dept", "N/A"),
-                "batch": student.get("batch", "N/A"),
-                "profile_picture": student.get("pic", ""),
-                "matched_skills": student["matched_skills"],
-                "match_score": f"{student['match_score']}%"
+                "student_id": r["student_id"],
+                "name": r["name"],
+                "department": r.get("dept", "N/A"),
+                "batch": r.get("batch", "N/A"),
+                "profile_picture": r.get("pic", ""),
+                "matched_skills": r["common_concepts"],
+                "match_score": f"{int(r['match_score'])}%"  # Format as "95%" for UI
             })
-        # ---------------------------------------------------------
 
-        # C. Get Recent Collaborations (From other Faculty)
+        # C. Collaborations (Recent posts from other faculty)
         collab_query = """
         MATCH (other:Faculty)-[:PUBLISHED|LED_PROJECT]->(w:Work)
         WHERE other.user_id <> $user_id AND w.collaboration_type IS NOT NULL
-        RETURN other.name as faculty_name, other.department as faculty_dept, other.profile_picture as faculty_pic,
+        RETURN other.name as faculty_name, other.department as faculty_dept,
+               other.profile_picture as faculty_pic,
                w.title as title, w.collaboration_type as type
-        ORDER BY w.id DESC
-        LIMIT 3
+        ORDER BY w.id DESC LIMIT 3
         """
         collab_res = session.run(collab_query, user_id=user_id)
-        for record in collab_res:
-            response_data["faculty_collaborations"].append({
-                "faculty_name": record["faculty_name"],
-                "faculty_dept": record["faculty_dept"],
-                "faculty_pic": record["faculty_pic"],
-                "project_title": record["title"],
-                "collaboration_type": record["type"]
-            })
-            
-        return response_data
+        for r in collab_res:
+            response_data["faculty_collaborations"].append(r.data())
 
+        return response_data
     finally:
         session.close()
 
 
-# --- 2. COLLABORATION HUB (Search & Filter) ---
+# ---------------------------------------------------------
+# 2. STUDENT DASHBOARD (Landing Page)
+# ---------------------------------------------------------
+# app/routers/dashboard.py
+
+@router.get("/student/home")
+def get_student_dashboard(current_user: dict = Depends(get_current_user)):
+    """
+    Returns data for the Student Home Screen.
+    """
+    if current_user["role"].lower() != "student":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+    
+    response_data = {
+        "user_info": {},
+        "recommended_openings": [],
+        "all_openings": []
+    }
+
+    try:
+        # A. User Info
+        user_query = "MATCH (u:User {user_id: $user_id}) RETURN u.name as name, u.roll_no as roll_no"
+        user_res = session.run(user_query, user_id=user_id).single()
+        if user_res:
+            response_data["user_info"] = user_res.data()
+
+        # B. AI Recommendations (Using rag_service)
+        # We fetch openings that match student skills
+        recs = recommend_openings_for_student(user_id, limit=5)
+        for r in recs:
+            response_data["recommended_openings"].append({
+                "opening_id": r["opening_id"],
+                "title": r["title"],
+                "faculty_name": r["faculty_name"],
+                "department": r["faculty_dept"],
+                "skills": r["skills"][:3], # Show top 3 required skills
+                "match_score": f"{int(r['match_score'])}%" # Format as "92%" for UI
+            })
+
+        # --- C. FIXED QUERY FOR ALL OPENINGS ---
+        all_query = """
+        MATCH (f:Faculty)-[:POSTED]->(o:Opening)
+        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)
+        
+        // FIX: Group by 'o' and 'f' first to preserve them for sorting
+        WITH o, f, collect(c.name) as skills
+        
+        RETURN o.id as id, o.title as title, f.name as fname, f.department as fdept, skills
+        ORDER BY o.created_at DESC 
+        LIMIT 10
+        """
+        all_res = session.run(all_query)
+        for r in all_res:
+            response_data["all_openings"].append({
+                "opening_id": r["id"],
+                "title": r["title"],
+                "faculty_name": r["fname"],
+                "department": r["fdept"], # Make sure this key matches your UI model
+                "skills": r["skills"]
+            })
+
+        return response_data
+    finally:
+        session.close()
+
+# ---------------------------------------------------------
+# 3. COLLABORATION HUB (Search)
+# ---------------------------------------------------------
 @router.get("/faculty/collaborations")
 def search_collaborations(
     department: Optional[str] = None,
@@ -89,7 +154,6 @@ def search_collaborations(
     results = []
     
     try:
-        # Dynamic Filter Query
         query = """
         MATCH (f:Faculty)-[:PUBLISHED|LED_PROJECT]->(w:Work)
         WHERE w.collaboration_type IS NOT NULL
@@ -122,8 +186,9 @@ def search_collaborations(
     finally:
         session.close()
 
-
-# --- 3. SHORTLIST STUDENT ACTION ---
+# ---------------------------------------------------------
+# 4. ACTIONS (Shortlist)
+# ---------------------------------------------------------
 @router.post("/shortlist/{student_id}")
 def shortlist_student(student_id: str, current_user: dict = Depends(get_current_user)):
     if current_user["role"].lower() != "faculty":
@@ -133,12 +198,10 @@ def shortlist_student(student_id: str, current_user: dict = Depends(get_current_
     faculty_id = current_user["user_id"]
     
     try:
-        # Check if student exists
         check_q = "MATCH (s:Student {user_id: $sid}) RETURN s"
         if not session.run(check_q, sid=student_id).single():
             raise HTTPException(status_code=404, detail="Student not found")
 
-        # Create Relationship
         query = """
         MATCH (f:Faculty {user_id: $fid}), (s:Student {user_id: $sid})
         MERGE (f)-[:SHORTLISTED]->(s)

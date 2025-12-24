@@ -4,151 +4,178 @@ from app.core.database import db
 
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------
+# 1. FACULTY DASHBOARD RECOMMENDATIONS
+# --------------------------------------------------------------------------
 
-def recommend_students_for_faculty(faculty_id: str, limit: int = 10):
+def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
     """
-    Recommend students to a faculty based on shared interests & skills.
-    Used for Faculty Dashboard (NOT opening-specific).
+    Recommend students based on Faculty's research interests.
+    Used for: Faculty Home Dashboard.
+    Logic: (Shared Skills / Faculty Interests) * 100
     """
     session = db.get_session()
-
     try:
+        # We use a cleaner query that handles the 'division by zero' edge case
         query = """
-        MATCH (f:User {user_id: $faculty_id})-[:INTERESTED_IN]->(c:Concept)
-        MATCH (s:User {role: 'student'})-[:HAS_SKILL|INTERESTED_IN]->(c)
-
-        WITH s, COUNT(DISTINCT c) AS score,
-             collect(DISTINCT c.name) AS common_concepts
-
-        ORDER BY score DESC
+        MATCH (f:Faculty {user_id: $faculty_id})-[:INTERESTED_IN]->(interest:Concept)
+        WITH f, collect(id(interest)) AS faculty_interests_ids, count(interest) AS total_interests
+        
+        MATCH (s:Student)
+        WHERE s.user_id <> $faculty_id
+        
+        OPTIONAL MATCH (s)-[:HAS_SKILL]->(skill:Concept)
+        WHERE id(skill) IN faculty_interests_ids
+        
+        WITH s, total_interests, collect(skill.name) AS common_concepts, count(skill) AS shared_count
+        
+        WITH s, common_concepts, shared_count,
+             CASE WHEN total_interests = 0 THEN 0 
+                  ELSE round((toFloat(shared_count) / total_interests) * 100, 0) 
+             END AS match_score
+        
+        WHERE match_score > 0
+        ORDER BY match_score DESC
         LIMIT $limit
-
+        
         RETURN s.user_id AS student_id,
                s.name AS name,
-               score,
+               s.department AS dept,
+               s.batch AS batch,
+               s.profile_picture AS pic,
+               match_score,
                common_concepts
         """
-
-        result = session.run(
-            query,
-            faculty_id=faculty_id,
-            limit=limit
-        )
-
-        return [
-            {
-                "student_id": r["student_id"],
-                "name": r["name"],
-                "match_score": r["score"],
-                "common_concepts": r["common_concepts"],
-            }
-            for r in result
-        ]
-
-    except Neo4jError:
-        logger.exception("Faculty dashboard recommendation failed")
-        raise
+        result = session.run(query, faculty_id=faculty_id, limit=limit)
+        return [record.data() for record in result]
+    except Exception as e:
+        logger.error(f"Error in recommend_students_for_faculty: {e}")
+        return []
     finally:
         session.close()
-def recommend_students_for_opening(
-    opening_id: str,
-    faculty_id: str,
-    limit: int = 10,
-):
+
+def recommend_students_for_opening(opening_id: str, limit: int = 10):
     """
-    Recommend students for a specific opening.
-    Faculty ownership is enforced.
+    Recommend students for a SPECIFIC job/opening.
+    Used for: Clicking on an Opening to see candidates.
+    Logic: (Student Skills matching Requirements / Total Requirements) * 100
     """
     session = db.get_session()
-
     try:
         query = """
-        MATCH (f:User {user_id: $faculty_id})-[:POSTED]->(o:Opening {id: $opening_id})
-        MATCH (o)-[:REQUIRES]->(c:Concept)
-        MATCH (s:User {role: 'student'})-[:HAS_SKILL]->(c)
-
-        WITH s, COUNT(DISTINCT c) AS score,
-             collect(DISTINCT c.name) AS matched_skills
-
-        ORDER BY score DESC
+        MATCH (o:Opening {id: $opening_id})-[:REQUIRES]->(req:Concept)
+        WITH o, collect(id(req)) AS required_ids, count(req) AS total_req
+        
+        MATCH (s:Student)
+        OPTIONAL MATCH (s)-[:HAS_SKILL]->(skill:Concept)
+        WHERE id(skill) IN required_ids
+        
+        WITH s, total_req, collect(skill.name) AS matched_skills, count(skill) AS shared_count
+        
+        WITH s, matched_skills, 
+             CASE WHEN total_req = 0 THEN 0 
+                  ELSE round((toFloat(shared_count) / total_req) * 100, 0) 
+             END AS match_score
+             
+        WHERE match_score > 0
+        ORDER BY match_score DESC
         LIMIT $limit
-
+        
         RETURN s.user_id AS student_id,
                s.name AS name,
-               score,
+               s.profile_picture as pic,
+               match_score,
                matched_skills
         """
-
-        result = session.run(
-            query,
-            faculty_id=faculty_id,
-            opening_id=opening_id,
-            limit=limit,
-        )
-
-        return [
-            {
-                "student_id": r["student_id"],
-                "name": r["name"],
-                "match_score": r["score"],
-                "matched_skills": r["matched_skills"],
-            }
-            for r in result
-        ]
-
-    except Neo4jError:
-        logger.exception("Opening-based student recommendation failed")
-        raise
+        result = session.run(query, opening_id=opening_id, limit=limit)
+        return [record.data() for record in result]
+    except Exception as e:
+        logger.error(f"Error in recommend_students_for_opening: {e}")
+        return []
     finally:
         session.close()
 
+# --------------------------------------------------------------------------
+# 2. STUDENT DASHBOARD RECOMMENDATIONS
+# --------------------------------------------------------------------------
 
-def recommend_faculty_for_student(student_id: str, limit: int = 10):
+def recommend_openings_for_student(student_id: str, limit: int = 5):
     """
-    Recommend faculty to a student based on shared interests & skills.
-    Used for Student Dashboard (NOT opening-specific).
+    Recommend Openings based on Student's Skills.
+    Used for: Student Home Dashboard ("92% Match" card).
     """
     session = db.get_session()
-
     try:
         query = """
-        MATCH (s:User {user_id: $student_id})-[:HAS_SKILL|INTERESTED_IN]->(c:Concept)
-        MATCH (f:User {role: 'faculty'})-[:INTERESTED_IN]->(c)
-
-        WITH f,
-             COUNT(DISTINCT c) AS score,
-             collect(DISTINCT c.name) AS common_concepts
-
-        ORDER BY score DESC
+        MATCH (s:Student {user_id: $student_id})-[:HAS_SKILL]->(skill:Concept)
+        WITH s, collect(id(skill)) AS student_skill_ids
+        
+        MATCH (o:Opening)-[:REQUIRES]->(req:Concept)
+        WITH o, student_skill_ids, collect(req.name) AS required_skills, count(req) AS total_req
+        
+        // Count matches
+        OPTIONAL MATCH (o)-[:REQUIRES]->(req:Concept)
+        WHERE id(req) IN student_skill_ids
+        WITH o, required_skills, total_req, count(req) AS matched_count
+        
+        WITH o, required_skills, matched_count,
+             CASE WHEN total_req = 0 THEN 0 
+                  ELSE round((toFloat(matched_count) / total_req) * 100, 0) 
+             END AS match_score
+        
+        WHERE match_score > 0
+        
+        // Fetch Faculty Info
+        MATCH (f:Faculty)-[:POSTED]->(o)
+        
+        RETURN o.id as opening_id,
+               o.title as title,
+               f.name as faculty_name,
+               f.department as faculty_dept,
+               required_skills as skills,
+               match_score
+        ORDER BY match_score DESC
         LIMIT $limit
-
-        RETURN
-            f.user_id AS faculty_id,
-            f.name AS name,
-            f.designation AS designation,
-            score,
-            common_concepts
         """
+        result = session.run(query, student_id=student_id, limit=limit)
+        return [record.data() for record in result]
+    except Exception as e:
+        logger.error(f"Error in recommend_openings_for_student: {e}")
+        return []
+    finally:
+        session.close()
 
-        result = session.run(
-            query,
-            student_id=student_id,
-            limit=limit
-        )
-
-        return [
-            {
-                "faculty_id": r["faculty_id"],
-                "name": r["name"],
-                "designation": r["designation"],
-                "match_score": r["score"],
-                "common_concepts": r["common_concepts"],
-            }
-            for r in result
-        ]
-
-    except Neo4jError:
-        logger.exception("Student dashboard faculty recommendation failed")
-        raise
+def recommend_faculty_for_student(student_id: str, limit: int = 5):
+    """
+    Recommend Faculty Mentors based on shared interests.
+    Used for: Student Dashboard.
+    """
+    session = db.get_session()
+    try:
+        query = """
+        MATCH (s:Student {user_id: $student_id})-[:INTERESTED_IN]->(interest:Concept)
+        WITH s, collect(id(interest)) AS student_interests_ids
+        
+        MATCH (f:Faculty)
+        OPTIONAL MATCH (f)-[:INTERESTED_IN|EXPERT_IN]->(c:Concept)
+        WHERE id(c) IN student_interests_ids
+        
+        WITH f, collect(c.name) AS common_concepts, count(c) AS shared_count
+        
+        ORDER BY shared_count DESC
+        LIMIT $limit
+        
+        RETURN f.user_id AS faculty_id,
+               f.name AS name,
+               f.designation AS designation,
+               f.profile_picture as pic,
+               shared_count as score,
+               common_concepts
+        """
+        result = session.run(query, student_id=student_id, limit=limit)
+        return [record.data() for record in result]
+    except Exception as e:
+        logger.error(f"Error in recommend_faculty_for_student: {e}")
+        return []
     finally:
         session.close()
