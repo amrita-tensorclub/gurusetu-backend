@@ -16,7 +16,6 @@ def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
     """
     session = db.get_session()
     try:
-        # We use a cleaner query that handles the 'division by zero' edge case
         query = """
         MATCH (f:Faculty {user_id: $faculty_id})-[:INTERESTED_IN]->(interest:Concept)
         WITH f, collect(id(interest)) AS faculty_interests_ids, count(interest) AS total_interests
@@ -106,6 +105,7 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
     """
     session = db.get_session()
     try:
+        # UPDATED QUERY: Returns faculty_id and profile_picture
         query = """
         MATCH (s:Student {user_id: $student_id})-[:HAS_SKILL]->(skill:Concept)
         WITH s, collect(id(skill)) AS student_skill_ids
@@ -113,7 +113,6 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
         MATCH (o:Opening)-[:REQUIRES]->(req:Concept)
         WITH o, student_skill_ids, collect(req.name) AS required_skills, count(req) AS total_req
         
-        // Count matches
         OPTIONAL MATCH (o)-[:REQUIRES]->(req:Concept)
         WHERE id(req) IN student_skill_ids
         WITH o, required_skills, total_req, count(req) AS matched_count
@@ -125,13 +124,14 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
         
         WHERE match_score > 0
         
-        // Fetch Faculty Info
         MATCH (f:Faculty)-[:POSTED]->(o)
         
         RETURN o.id as opening_id,
                o.title as title,
+               f.user_id as faculty_id,            
                f.name as faculty_name,
                f.department as faculty_dept,
+               f.profile_picture as faculty_pic,   
                required_skills as skills,
                match_score
         ORDER BY match_score DESC
