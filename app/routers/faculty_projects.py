@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from app.core.security import get_current_user 
-from app.models.project import StudentWorkCreate # We can reuse the model
+from app.models.project import StudentWorkCreate 
 from app.core.database import db
 import uuid
 
@@ -18,21 +18,16 @@ def add_faculty_research(
             detail="Only faculty can add research works"
         )
 
-    # 2. OVERRIDE USER_ID: Use secure Token ID
     secure_user_id = current_user["user_id"]
-
     session = db.get_session()
     work_id = str(uuid.uuid4())
 
     try:
-        # Faculty usually publish papers, so we default to 'Publication' label logic
-        # but we keep the flexibility if they want to add a 'Project'
         additional_label = "Publication" if work.type.lower() == "publication" else "Project"
-        
-        # We can use a slightly different relationship for Faculty if we want, 
-        # e.g., :PUBLISHED instead of :AUTHORED. For now, let's keep it consistent.
+        # If it is a collaboration request, we can add a specific label or just a property
         rel_type = "PUBLISHED" if work.type.lower() == "publication" else "LED_PROJECT"
 
+        # --- UPDATED QUERY ---
         query = f"""
         MATCH (u:User {{user_id: $user_id}})
 
@@ -45,7 +40,8 @@ def add_faculty_research(
             year: $year,
             collaborators: $collaborators,
             outcome: $outcome,
-            type: $type
+            type: $type,
+            collaboration_type: $collaboration_type  // <--- SAVING THE NEW FIELD
         }})
 
         MERGE (u)-[:{rel_type}]->(w)
@@ -67,7 +63,8 @@ def add_faculty_research(
             collaborators=work.collaborators,
             outcome=work.outcome,
             type=work.type,
-            tools=work.tools_used
+            tools=work.tools_used,
+            collaboration_type=work.collaboration_type # <--- Passing the value
         )
         return {"message": "Research added to faculty profile!", "id": work_id}
 
