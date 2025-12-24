@@ -1,98 +1,134 @@
 import logging
+from typing import List, Dict
 from app.core.database import db
-from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
+# STUDENT → FACULTY MATCHING
 
-def recommend_faculty_for_student(student_id: str, limit: int = 5):
+def recommend_faculty_for_student(student_id: str, limit: int = 5) -> List[Dict]:
     """
-    Recommend faculty members for a given student using
-    Vector similarity + Graph boost (shared skills)
+    Recommend faculty members for a given student using GraphRAG logic
     """
+
     session = db.get_session()
 
     try:
         query = """
-        MATCH (s:Student {user_id: $student_id})
+        MATCH (s:User:Student {user_id: $student_id})
 
-        CALL db.index.vector.queryNodes(
-            'user_embedding_index',
-            $limit,
-            s.embedding
-        )
-        YIELD node AS f, score
-        WHERE f:Faculty
+        // Student skills & interests
+        OPTIONAL MATCH (s)-[:HAS_SKILL|INTERESTED_IN]->(c:Concept)
+        WITH s, collect(DISTINCT c) AS student_concepts
 
-        OPTIONAL MATCH (s)-[:HAS_SKILL]->(c)<-[:EXPERT_IN]-(f)
-        WITH f, score, COUNT(c) AS shared_concepts, collect(DISTINCT c.name) AS common_skills
+        // Student project technologies
+        OPTIONAL MATCH (s)-[:COMPLETED|AUTHORED]->(:Work)-[:USED_TECH]->(tc:Concept)
+        WITH s, student_concepts + collect(DISTINCT tc) AS all_student_concepts
 
+        // Faculty interests
+        MATCH (f:User:Faculty)
+        OPTIONAL MATCH (f)-[:INTERESTED_IN]->(fc:Concept)
+
+        WITH s, f,
+             apoc.coll.intersection(all_student_concepts, collect(DISTINCT fc)) AS common_concepts
+
+        WITH f,
+             size(common_concepts) AS score,
+             [c IN common_concepts | c.name] AS matched_tags
+
+        WHERE score > 0
         RETURN
             f.user_id AS faculty_id,
-            f.name AS name,
-            round((score + shared_concepts * 0.1) * 100, 2) AS match_percentage,
-            common_skills
-        ORDER BY match_percentage DESC
+            f.name AS faculty_name,
+            score AS match_score,
+            matched_tags
+        ORDER BY score DESC
         LIMIT $limit
         """
 
-        result = session.run(
+        results = session.run(
             query,
             student_id=student_id,
             limit=limit,
         )
 
-        return [record.data() for record in result]
+        recommendations = []
+        for record in results:
+            recommendations.append({
+                "faculty_id": record["faculty_id"],
+                "faculty_name": record["faculty_name"],
+                "match_score": record["match_score"],
+                "matched_concepts": record["matched_tags"],
+            })
+
+        return recommendations
 
     except Exception:
-        logger.exception("Failed to generate faculty recommendations")
-        raise HTTPException(status_code=500, detail="Recommendation failed")
-
+        logger.exception("Faculty recommendation failed")
+        return []
     finally:
         session.close()
 
 
-def recommend_students_for_opening(opening_id: str, limit: int = 10):
+# OPENING → STUDENT MATCHING (FOR FACULTY)
+
+def recommend_students_for_opening(opening_id: str, limit: int = 5) -> List[Dict]:
     """
-    Recommend students for a specific opening (faculty view)
+    Recommend students for a given opening
     """
+
     session = db.get_session()
 
     try:
         query = """
-        MATCH (o:Opening {opening_id: $opening_id})
+        MATCH (o:Opening {id: $opening_id})
+        MATCH (o)-[:REQUIRES]->(rc:Concept)
 
-        CALL db.index.vector.queryNodes(
-            'user_embedding_index',
-            $limit,
-            o.embedding
-        )
-        YIELD node AS s, score
-        WHERE s:Student
+        MATCH (s:User:Student)
 
-        OPTIONAL MATCH (s)-[:HAS_SKILL]->(c)<-[:REQUIRES]-(o)
-        WITH s, score, COUNT(c) AS matched_skills, collect(DISTINCT c.name) AS matching_skills
+        OPTIONAL MATCH (s)-[:HAS_SKILL|INTERESTED_IN]->(sc:Concept)
+        OPTIONAL MATCH (s)-[:COMPLETED|AUTHORED]->(:Work)-[:USED_TECH]->(tc:Concept)
 
+        WITH s, o,
+             collect(DISTINCT rc) AS required,
+             collect(DISTINCT sc) + collect(DISTINCT tc) AS student_stack
+
+        WITH s,
+             apoc.coll.intersection(required, student_stack) AS matched
+
+        WITH s,
+             size(matched) AS score,
+             [c IN matched | c.name] AS matched_skills
+
+        WHERE score > 0
         RETURN
             s.user_id AS student_id,
-            s.name AS name,
-            round((score + matched_skills * 0.15) * 100, 2) AS match_percentage,
-            matching_skills
-        ORDER BY match_percentage DESC
+            s.name AS student_name,
+            score AS match_score,
+            matched_skills
+        ORDER BY score DESC
         LIMIT $limit
         """
 
-        result = session.run(
+        results = session.run(
             query,
             opening_id=opening_id,
             limit=limit,
         )
 
-        return [record.data() for record in result]
+        students = []
+        for record in results:
+            students.append({
+                "student_id": record["student_id"],
+                "student_name": record["student_name"],
+                "match_score": record["match_score"],
+                "matched_skills": record["matched_skills"],
+            })
+
+        return students
 
     except Exception:
-        logger.exception("Failed to generate student recommendations")
-        raise HTTPException(status_code=500, detail="Recommendation failed")
-
+        logger.exception("Student recommendation failed")
+        return []
     finally:
         session.close()
