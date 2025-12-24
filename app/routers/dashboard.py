@@ -210,3 +210,93 @@ def shortlist_student(student_id: str, current_user: dict = Depends(get_current_
         return {"message": "Student shortlisted successfully"}
     finally:
         session.close()
+
+
+# ... (keep existing imports) ...
+
+# ---------------------------------------------------------
+# 5. SIDE MENU (DRAWER) DATA
+# ---------------------------------------------------------
+
+@router.get("/student/menu")
+def get_student_side_menu(current_user: dict = Depends(get_current_user)):
+    """
+    Fetches data for the Student Side Drawer (Header info).
+    """
+    if current_user["role"].lower() != "student":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+    
+    try:
+        # Fetch only what's needed for the red header card
+        query = """
+        MATCH (u:User {user_id: $user_id}) 
+        RETURN u.name as name, u.roll_no as id, u.department as dept, u.profile_picture as pic
+        """
+        result = session.run(query, user_id=user_id).single()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {
+            "name": result["name"],
+            "roll_no": result["id"],        # Matches "Roll No: AM.EN..."
+            "department": result["dept"],   # Matches "Department: CSE"
+            "profile_picture": result["pic"],
+            "menu_items": [                 # Dynamic list for Frontend
+                {"label": "Home", "icon": "home", "route": "/student/home"},
+                {"label": "Profile", "icon": "person", "route": "/student/profile"},
+                {"label": "My Projects", "icon": "folder", "route": "/student/projects"},
+                {"label": "Help & Support", "icon": "help", "route": "/support"},
+                {"label": "All Faculty", "icon": "group", "route": "/faculty-list"},
+                {"label": "Logout", "icon": "logout", "route": "/logout"}
+            ]
+        }
+    finally:
+        session.close()
+
+
+@router.get("/faculty/menu")
+def get_faculty_side_menu(current_user: dict = Depends(get_current_user)):
+    """
+    Fetches data for the Faculty Side Drawer (Header info).
+    """
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+    
+    try:
+        # Fetch header info (Employee ID is stored as employee_id or just id depending on your setup)
+        # Assuming you stored 'employee_id' during registration, or we use a generic ID field.
+        # Let's assume we want to show the 'designation' if available too? 
+        # The screenshot shows "Employee ID: FAC..." and "Department: CSE"
+        
+        query = """
+        MATCH (u:User {user_id: $user_id}) 
+        RETURN u.name as name, u.employee_id as id, u.department as dept, u.profile_picture as pic
+        """
+        result = session.run(query, user_id=user_id).single()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {
+            "name": result["name"],
+            "employee_id": result["id"],      # Matches "Employee ID: FAC..."
+            "department": result["dept"],
+            "profile_picture": result["pic"],
+            "menu_items": [
+                {"label": "Home", "icon": "home", "route": "/faculty/home"},
+                {"label": "Profile", "icon": "person", "route": "/faculty/profile"},
+                {"label": "My Projects", "icon": "folder", "route": "/faculty/projects"},
+                {"label": "Faculty Collaborations", "icon": "link", "route": "/faculty/collaborations"},
+                {"label": "Help & Support", "icon": "help", "route": "/support"},
+                {"label": "Logout", "icon": "logout", "route": "/logout"}
+            ]
+        }
+    finally:
+        session.close()
