@@ -16,3 +16,7 @@ class StudentWorkCreate(BaseModel):
     collaborators: Optional[str] = None
     outcome: Optional[str] = None
     tools_used: List[str] = []
+    
+# --- NEW FIELD FOR FACULTY DASHBOARD ---
+    # Example values: "Seeking Co-PI", "Joint Research", "Open for Students"
+    collaboration_type: Optional[str] = None
