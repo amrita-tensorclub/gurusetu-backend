@@ -6,7 +6,6 @@ import uuid
 router = APIRouter()
 
 @router.post("/")
-@router.post("/")
 def create_opening(
     opening: OpeningCreate,
     current_user: dict = Depends(get_current_user)
