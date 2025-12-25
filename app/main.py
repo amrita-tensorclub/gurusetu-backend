@@ -4,7 +4,7 @@ from app.core.database import db
 import asyncio
 
 # --- FIX IS HERE: Add 'faculty_projects' to the end of this list ---
-from app.routers import auth, users, openings, recommendations, student_projects, faculty_projects,dashboard,recommendations
+from app.routers import auth, users, openings, recommendations, student_projects, faculty_projects, dashboard, applications
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,4 +32,4 @@ app.include_router(recommendations.router, prefix="/recommend", tags=["AI"])
 app.include_router(student_projects.router, prefix="/student-projects", tags=["Student Portfolio"])
 app.include_router(faculty_projects.router, prefix="/faculty-projects", tags=["Faculty Research"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
-app.include_router(recommendations.router, prefix="/recommend", tags=["AI Recommendations"])
+app.include_router(applications.router, prefix="/applications", tags=["Applications"])
