@@ -7,6 +7,7 @@ import uuid
 
 router = APIRouter()
 
+
 @router.post("/apply/{opening_id}", response_model=dict)
 def apply_to_opening(
     opening_id: str,
@@ -94,7 +95,8 @@ def get_my_applications(
 ):
     """Student views their submitted applications"""
     if current_user["role"].lower() != "student":
-        raise HTTPException(status_code=403, detail="Only students can view applications")
+        raise HTTPException(
+            status_code=403, detail="Only students can view applications")
 
     student_id = current_user["user_id"]
     session = db.get_session()
@@ -143,7 +145,8 @@ def get_applicants_for_opening(
 ):
     """Faculty views applicants for their opening"""
     if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Only faculty can view applicants")
+        raise HTTPException(
+            status_code=403, detail="Only faculty can view applicants")
 
     faculty_id = current_user["user_id"]
     session = db.get_session()
@@ -180,7 +183,8 @@ def get_applicants_for_opening(
         ORDER BY match_score DESC, app.applied_at DESC
         """
 
-        result = session.run(query, faculty_id=faculty_id, opening_id=opening_id)
+        result = session.run(query, faculty_id=faculty_id,
+                             opening_id=opening_id)
         return [record.data() for record in result]
 
     except Exception as e:
@@ -197,13 +201,55 @@ def update_application_status(
 ):
     """Faculty updates application status (accept/reject)"""
     if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Only faculty can update status")
+        raise HTTPException(
+            status_code=403, detail="Only faculty can update status")
+
+    # Validate incoming status value - only specific target statuses allowed
+    ALLOWED_STATUSES = ["accepted", "rejected"]
+    if update.status.lower() not in ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status '{update.status}'. Allowed values: {', '.join(ALLOWED_STATUSES)}"
+        )
 
     faculty_id = current_user["user_id"]
     session = db.get_session()
 
     try:
-        query = """
+        # First, fetch the current application status to validate state transitions
+        check_query = """
+        MATCH (f:Faculty {user_id: $faculty_id})-[:POSTED]->(o:Opening)
+        MATCH (s:Student)-[app:APPLIED {application_id: $application_id}]->(o)
+        
+        RETURN app.status as current_status,
+               s.name as student_name,
+               o.title as opening_title
+        """
+
+        check_result = session.run(
+            check_query,
+            faculty_id=faculty_id,
+            application_id=application_id
+        )
+
+        check_record = check_result.single()
+        if not check_record:
+            raise HTTPException(
+                status_code=404,
+                detail="Application not found or you are not authorized to modify it"
+            )
+
+        current_status = check_record["current_status"]
+
+        # Enforce valid state transitions - only allow transitions from "pending"
+        if current_status.lower() != "pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid state transition. Cannot change status from '{current_status}' to '{update.status}'. Only 'pending' applications can be accepted or rejected."
+            )
+
+        # Validation passed - perform the status update
+        update_query = """
         MATCH (f:Faculty {user_id: $faculty_id})-[:POSTED]->(o:Opening)
         MATCH (s:Student)-[app:APPLIED {application_id: $application_id}]->(o)
 
@@ -212,25 +258,30 @@ def update_application_status(
 
         RETURN s.name as student_name,
                o.title as opening_title,
-               app.status as status
+               app.status as new_status,
+               toString(app.updated_at) as updated_at
         """
 
-        result = session.run(
-            query,
+        update_result = session.run(
+            update_query,
             faculty_id=faculty_id,
             application_id=application_id,
-            status=update.status
+            status=update.status.lower()
         )
 
-        record = result.single()
+        record = update_result.single()
         if not record:
-            raise HTTPException(status_code=404, detail="Application not found or unauthorized")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update application status"
+            )
 
         return {
             "message": f"Application {update.status}",
             "student_name": record["student_name"],
             "opening_title": record["opening_title"],
-            "status": record["status"]
+            "status": record["new_status"],
+            "updated_at": record["updated_at"]
         }
 
     except HTTPException:
@@ -248,7 +299,8 @@ def withdraw_application(
 ):
     """Student withdraws their application"""
     if current_user["role"].lower() != "student":
-        raise HTTPException(status_code=403, detail="Only students can withdraw")
+        raise HTTPException(
+            status_code=403, detail="Only students can withdraw")
 
     student_id = current_user["user_id"]
     session = db.get_session()
@@ -256,6 +308,7 @@ def withdraw_application(
     try:
         query = """
         MATCH (s:Student {user_id: $student_id})-[app:APPLIED]->(o:Opening {id: $opening_id})
+        WHERE app.status = 'pending'
 
         WITH app, o.title as opening_title
         DELETE app
@@ -263,11 +316,15 @@ def withdraw_application(
         RETURN opening_title
         """
 
-        result = session.run(query, student_id=student_id, opening_id=opening_id)
+        result = session.run(query, student_id=student_id,
+                             opening_id=opening_id)
         record = result.single()
 
         if not record:
-            raise HTTPException(status_code=404, detail="Application not found")
+            raise HTTPException(
+                status_code=400,
+                detail="Application not found or cannot be withdrawn (not pending)"
+            )
 
         return {
             "message": "Application withdrawn successfully",

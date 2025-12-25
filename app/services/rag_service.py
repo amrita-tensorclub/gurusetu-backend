@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 # 1. FACULTY DASHBOARD RECOMMENDATIONS
 # --------------------------------------------------------------------------
 
+
 def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
     """
     Recommend students based on Faculty's research interests.
@@ -51,6 +52,7 @@ def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
         return []
     finally:
         session.close()
+
 
 def recommend_students_for_opening(opening_id: str, limit: int = 10):
     """
@@ -98,6 +100,7 @@ def recommend_students_for_opening(opening_id: str, limit: int = 10):
 # --------------------------------------------------------------------------
 # 2. STUDENT DASHBOARD RECOMMENDATIONS
 # --------------------------------------------------------------------------
+
 
 def recommend_openings_for_student(student_id: str, limit: int = 5):
     """
@@ -152,9 +155,12 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
                  ELSE 0.8
              END AS recency_multiplier
 
-        // Apply boost to score
+        // Apply boost to score and cap at 100 before rounding
         WITH o, required_skills,
-             round(base_score * recency_multiplier, 0) AS match_score
+             CASE
+                 WHEN base_score * recency_multiplier > 100 THEN round(100.0, 0)
+                 ELSE round(base_score * recency_multiplier, 0)
+             END AS match_score
 
         MATCH (f:Faculty)-[:POSTED]->(o)
 
@@ -176,6 +182,7 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
         return []
     finally:
         session.close()
+
 
 def recommend_faculty_for_student(student_id: str, limit: int = 5):
     """
