@@ -27,7 +27,7 @@ def add_faculty_research(
         # If it is a collaboration request, we can add a specific label or just a property
         rel_type = "PUBLISHED" if work.type.lower() == "publication" else "LED_PROJECT"
 
-        # --- UPDATED QUERY ---
+        # --- QUERY ---
         query = f"""
         MATCH (u:User {{user_id: $user_id}})
 
@@ -41,7 +41,7 @@ def add_faculty_research(
             collaborators: $collaborators,
             outcome: $outcome,
             type: $type,
-            collaboration_type: $collaboration_type  // <--- SAVING THE NEW FIELD
+            collaboration_type: $collaboration_type 
         }})
 
         MERGE (u)-[:{rel_type}]->(w)
@@ -64,7 +64,7 @@ def add_faculty_research(
             outcome=work.outcome,
             type=work.type,
             tools=work.tools_used,
-            collaboration_type=work.collaboration_type # <--- Passing the value
+            collaboration_type=work.collaboration_type 
         )
         return {"message": "Research added to faculty profile!", "id": work_id}
 
