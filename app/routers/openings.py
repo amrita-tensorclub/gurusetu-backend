@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from app.models.openings import OpeningCreate
 from app.core.database import db
+from app.core.security import get_current_user  # <--- THIS WAS MISSING
 import uuid
 
 router = APIRouter()
@@ -12,7 +13,7 @@ def create_opening(
 ):
     if current_user["role"].lower() != "faculty":
         raise HTTPException(
-            status_code=403,
+            status_code=403, 
             detail="Only faculty can create openings"
         )
 

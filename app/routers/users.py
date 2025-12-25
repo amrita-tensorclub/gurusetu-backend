@@ -5,7 +5,6 @@ from app.models.user import StudentProfileUpdate, FacultyProfileUpdate
 
 router = APIRouter()
 
-
 @router.put("/student/profile")
 def update_student_profile(
     data: StudentProfileUpdate,
@@ -21,6 +20,9 @@ def update_student_profile(
     session = db.get_session()
 
     try:
+        # Convert Pydantic models to a list of dicts for Cypher
+        projects_data = [p.dict() for p in data.projects]
+
         query = """
         MATCH (u:User {user_id: $user_id})
         SET u.name = COALESCE($name, u.name),
@@ -30,20 +32,42 @@ def update_student_profile(
             u.batch = $batch,
             u.bio = $bio
 
+        // 1. Clear old Skills & Interests relationships
         WITH u
         OPTIONAL MATCH (u)-[r:HAS_SKILL|INTERESTED_IN]->()
         DELETE r
 
+        // 2. Clear old Projects (Detach and delete the Work nodes created by this student)
+        WITH u
+        OPTIONAL MATCH (u)-[:WORKED_ON]->(oldW:Work)
+        DETACH DELETE oldW
+
+        // 3. Add New Skills
         WITH u
         FOREACH (skill IN $skills |
             MERGE (s:Concept {name: toLower(skill)})
             MERGE (u)-[:HAS_SKILL]->(s)
         )
 
+        // 4. Add New Interests
         WITH u
         FOREACH (interest IN $interests |
             MERGE (i:Concept {name: toLower(interest)})
             MERGE (u)-[:INTERESTED_IN]->(i)
+        )
+
+        // 5. Add New Projects
+        WITH u
+        FOREACH (proj IN $projects |
+            CREATE (w:Work {
+                title: proj.title,
+                from_date: proj.from_date,
+                to_date: proj.to_date,
+                description: proj.description,
+                tools: proj.tools,
+                type: "Student Project"
+            })
+            CREATE (u)-[:WORKED_ON]->(w)
         )
 
         RETURN u.user_id AS user_id
@@ -60,6 +84,7 @@ def update_student_profile(
             bio=data.bio,
             skills=data.skills,
             interests=data.interests,
+            projects=projects_data  # Pass the list of dicts here
         ).single()
 
         if not result:

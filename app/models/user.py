@@ -1,6 +1,14 @@
 from pydantic import BaseModel, validator
 from typing import List, Optional
 
+# --- NEW: Model for a single Project ---
+class StudentProject(BaseModel):
+    title: str
+    from_date: str  # e.g., "Jan 2024"
+    to_date: str    # e.g., "May 2024"
+    description: str
+    tools: List[str] = []
+
 # Base fields shared by everyone
 class UserBase(BaseModel):
     name: Optional[str] = None              # UI: Editable Name
@@ -13,6 +21,7 @@ class StudentProfileUpdate(UserBase):
     batch: Optional[str] = None
     skills: List[str] = []
     interests: List[str] = []
+    projects: List[StudentProject] = []  # <--- ADDED THIS FIELD
 
     @validator('skills')
     def validate_skills_limit(cls, v):
@@ -27,13 +36,13 @@ class StudentProfileUpdate(UserBase):
         return v
 
 class FacultyProfileUpdate(UserBase):
-    designation: Optional[str] = None       # UI: Dropdown "Assistant Professor"
-    office_hours: Optional[str] = None      # UI: "Mon, Wed, Fri..."
-    cabin_block: Optional[str] = None       # UI: "B"
-    cabin_floor: Optional[int] = None       # UI: "2"
-    cabin_number: Optional[str] = None      # UI: "B-205"
-    qualifications: List[str] = []          # UI: Tags "PhD in AI", etc.
-    domain_interests: List[str] = []        # UI: "Artificial Intelligence", "Robotics"
+    designation: Optional[str] = None       
+    office_hours: Optional[str] = None      
+    cabin_block: Optional[str] = None       
+    cabin_floor: Optional[int] = None       
+    cabin_number: Optional[str] = None      
+    qualifications: List[str] = []          
+    domain_interests: List[str] = []        
 
     @validator('domain_interests')
     def validate_interests_limit(cls, v):
