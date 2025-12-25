@@ -29,11 +29,10 @@ def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
         WITH s, total_interests, collect(skill.name) AS common_concepts, count(skill) AS shared_count
         
         WITH s, common_concepts, shared_count,
-             CASE WHEN total_interests = 0 THEN 0 
-                  ELSE round((toFloat(shared_count) / total_interests) * 100, 0) 
+             CASE WHEN total_interests = 0 THEN 0
+                  ELSE round((toFloat(shared_count) / total_interests) * 100, 0)
              END AS match_score
-        
-        WHERE match_score > 0
+
         ORDER BY match_score DESC
         LIMIT $limit
         
@@ -64,19 +63,21 @@ def recommend_students_for_opening(opening_id: str, limit: int = 10):
         query = """
         MATCH (o:Opening {id: $opening_id})-[:REQUIRES]->(req:Concept)
         WITH o, collect(id(req)) AS required_ids, count(req) AS total_req
-        
+
         MATCH (s:Student)
+        WHERE (o.min_cgpa IS NULL OR s.cgpa >= o.min_cgpa)
+          AND (size(o.target_years) = 0 OR s.batch IN o.target_years)
+
         OPTIONAL MATCH (s)-[:HAS_SKILL]->(skill:Concept)
         WHERE id(skill) IN required_ids
         
         WITH s, total_req, collect(skill.name) AS matched_skills, count(skill) AS shared_count
         
-        WITH s, matched_skills, 
-             CASE WHEN total_req = 0 THEN 0 
-                  ELSE round((toFloat(shared_count) / total_req) * 100, 0) 
+        WITH s, matched_skills,
+             CASE WHEN total_req = 0 THEN 0
+                  ELSE round((toFloat(shared_count) / total_req) * 100, 0)
              END AS match_score
-             
-        WHERE match_score > 0
+
         ORDER BY match_score DESC
         LIMIT $limit
         
@@ -106,11 +107,23 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
     session = db.get_session()
     try:
         # UPDATED QUERY: Returns faculty_id and profile_picture
+        # Also filters out already-applied openings
         query = """
-        MATCH (s:Student {user_id: $student_id})-[:HAS_SKILL]->(skill:Concept)
-        WITH s, collect(id(skill)) AS student_skill_ids
-        
+        MATCH (s:Student {user_id: $student_id})
+
+        // Get already-applied openings
+        OPTIONAL MATCH (s)-[:APPLIED]->(applied:Opening)
+        WITH s, collect(id(applied)) AS applied_ids
+
+        // Get student skills
+        OPTIONAL MATCH (s)-[:HAS_SKILL]->(skill:Concept)
+        WITH s, applied_ids, collect(id(skill)) AS student_skill_ids
+
         MATCH (o:Opening)-[:REQUIRES]->(req:Concept)
+        WHERE NOT id(o) IN applied_ids
+          AND (o.min_cgpa IS NULL OR s.cgpa >= o.min_cgpa)
+          AND (size(o.target_years) = 0 OR s.batch IN o.target_years)
+
         WITH o, student_skill_ids, collect(req.name) AS required_skills, count(req) AS total_req
         
         OPTIONAL MATCH (o)-[:REQUIRES]->(req:Concept)
@@ -118,12 +131,10 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
         WITH o, required_skills, total_req, count(req) AS matched_count
         
         WITH o, required_skills, matched_count,
-             CASE WHEN total_req = 0 THEN 0 
-                  ELSE round((toFloat(matched_count) / total_req) * 100, 0) 
+             CASE WHEN total_req = 0 THEN 0
+                  ELSE round((toFloat(matched_count) / total_req) * 100, 0)
              END AS match_score
-        
-        WHERE match_score > 0
-        
+
         MATCH (f:Faculty)-[:POSTED]->(o)
         
         RETURN o.id as opening_id,
