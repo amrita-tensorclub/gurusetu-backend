@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import List, Optional
 
 # Base fields shared by everyone
@@ -14,6 +14,18 @@ class StudentProfileUpdate(UserBase):
     skills: List[str] = []
     interests: List[str] = []
 
+    @validator('skills')
+    def validate_skills_limit(cls, v):
+        if len(v) > 20:
+            raise ValueError(f'Maximum 20 skills allowed. You have {len(v)}.')
+        return v
+
+    @validator('interests')
+    def validate_interests_limit(cls, v):
+        if len(v) > 20:
+            raise ValueError(f'Maximum 20 interests allowed. You have {len(v)}.')
+        return v
+
 class FacultyProfileUpdate(UserBase):
     designation: Optional[str] = None       # UI: Dropdown "Assistant Professor"
     office_hours: Optional[str] = None      # UI: "Mon, Wed, Fri..."
@@ -22,3 +34,9 @@ class FacultyProfileUpdate(UserBase):
     cabin_number: Optional[str] = None      # UI: "B-205"
     qualifications: List[str] = []          # UI: Tags "PhD in AI", etc.
     domain_interests: List[str] = []        # UI: "Artificial Intelligence", "Robotics"
+
+    @validator('domain_interests')
+    def validate_interests_limit(cls, v):
+        if len(v) > 15:
+            raise ValueError(f'Maximum 15 research interests allowed. You have {len(v)}.')
+        return v
