@@ -103,6 +103,11 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
     """
     Recommend Openings based on Student's Skills.
     Used for: Student Home Dashboard ("92% Match" card).
+
+    NEW: Applies recency boost:
+    - Posted < 7 days ago: 1.3x multiplier
+    - Posted 7-30 days ago: 1.0x (no change)
+    - Posted > 30 days ago: 0.8x multiplier
     """
     session = db.get_session()
     try:
@@ -125,24 +130,40 @@ def recommend_openings_for_student(student_id: str, limit: int = 5):
           AND (size(o.target_years) = 0 OR s.batch IN o.target_years)
 
         WITH o, student_skill_ids, collect(req.name) AS required_skills, count(req) AS total_req
-        
+
         OPTIONAL MATCH (o)-[:REQUIRES]->(req:Concept)
         WHERE id(req) IN student_skill_ids
         WITH o, required_skills, total_req, count(req) AS matched_count
-        
+
+        // Base match score
         WITH o, required_skills, matched_count,
              CASE WHEN total_req = 0 THEN 0
                   ELSE round((toFloat(matched_count) / total_req) * 100, 0)
-             END AS match_score
+             END AS base_score
+
+        // Recency boost calculation
+        WITH o, required_skills, base_score,
+             duration.inDays(o.created_at, datetime()).days AS days_old
+
+        WITH o, required_skills, base_score, days_old,
+             CASE
+                 WHEN days_old < 7 THEN 1.3
+                 WHEN days_old <= 30 THEN 1.0
+                 ELSE 0.8
+             END AS recency_multiplier
+
+        // Apply boost to score
+        WITH o, required_skills,
+             round(base_score * recency_multiplier, 0) AS match_score
 
         MATCH (f:Faculty)-[:POSTED]->(o)
-        
+
         RETURN o.id as opening_id,
                o.title as title,
-               f.user_id as faculty_id,            
+               f.user_id as faculty_id,
                f.name as faculty_name,
                f.department as faculty_dept,
-               f.profile_picture as faculty_pic,   
+               f.profile_picture as faculty_pic,
                required_skills as skills,
                match_score
         ORDER BY match_score DESC
