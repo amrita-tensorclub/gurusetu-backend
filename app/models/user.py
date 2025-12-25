@@ -16,12 +16,36 @@ class StudentProfileUpdate(UserBase):
 
     @validator('skills')
     def validate_skills_limit(cls, v):
+        """
+        Validate that the provided skills list contains at most 20 items.
+        
+        Parameters:
+            v (list): The list of skill strings to validate.
+        
+        Returns:
+            list: The same `v` list if it contains 20 or fewer items.
+        
+        Raises:
+            ValueError: If `v` contains more than 20 items; message includes the allowed maximum and the current count.
+        """
         if len(v) > 20:
             raise ValueError(f'Maximum 20 skills allowed. You have {len(v)}.')
         return v
 
     @validator('interests')
     def validate_interests_limit(cls, v):
+        """
+        Validate that the provided interests list contains at most 20 items.
+        
+        Parameters:
+            v (list): The list of interest strings to validate.
+        
+        Returns:
+            list: The same list `v` if it contains 20 or fewer items.
+        
+        Raises:
+            ValueError: If `v` contains more than 20 items.
+        """
         if len(v) > 20:
             raise ValueError(f'Maximum 20 interests allowed. You have {len(v)}.')
         return v
@@ -37,6 +61,18 @@ class FacultyProfileUpdate(UserBase):
 
     @validator('domain_interests')
     def validate_interests_limit(cls, v):
+        """
+        Validate that the number of domain (research) interests does not exceed 15.
+        
+        Parameters:
+            v (list): List of domain/research interests.
+        
+        Returns:
+            list: The original list of interests when the count is 15 or fewer.
+        
+        Raises:
+            ValueError: If the list contains more than 15 interests.
+        """
         if len(v) > 15:
             raise ValueError(f'Maximum 15 research interests allowed. You have {len(v)}.')
         return v

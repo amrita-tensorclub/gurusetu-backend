@@ -10,9 +10,23 @@ logger = logging.getLogger(__name__)
 
 def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
     """
-    Recommend students based on Faculty's research interests.
-    Used for: Faculty Home Dashboard.
-    Logic: (Shared Skills / Faculty Interests) * 100
+    Recommend students for a faculty member based on overlap between the faculty's interest concepts and students' skills.
+    
+    match_score is the percentage (0–100) of the faculty's interests that each student has (rounded to the nearest integer). Students with higher match_score appear first.
+    
+    Parameters:
+        faculty_id (str): The faculty user's identifier (user_id) to base recommendations on.
+        limit (int): Maximum number of student recommendations to return.
+    
+    Returns:
+        list[dict]: A list of recommendation records. Each record contains:
+            - student_id (str): Student's user_id.
+            - name (str): Student's name.
+            - dept (str): Student's department.
+            - batch (str|int): Student's batch/year.
+            - pic (str|None): URL or identifier of the student's profile picture.
+            - match_score (int): Percentage score (0–100) representing overlap with faculty interests.
+            - common_concepts (list[str]): Names of concepts/skills shared between the faculty and the student.
     """
     session = db.get_session()
     try:
@@ -54,9 +68,19 @@ def recommend_students_for_faculty(faculty_id: str, limit: int = 5):
 
 def recommend_students_for_opening(opening_id: str, limit: int = 10):
     """
-    Recommend students for a SPECIFIC job/opening.
-    Used for: Clicking on an Opening to see candidates.
-    Logic: (Student Skills matching Requirements / Total Requirements) * 100
+    Recommend students for a specific opening by scoring each student on the percentage of the opening's required skills they possess.
+    
+    Parameters:
+        opening_id (str): ID of the Opening to match candidates against.
+        limit (int): Maximum number of student records to return.
+    
+    Returns:
+        list[dict]: A list of student recommendation records ordered by descending match score. Each record contains:
+            - student_id (str): Student's user ID.
+            - name (str): Student's name.
+            - pic: Student's profile picture URL or value stored in the profile.
+            - match_score (int): Percentage (0–100) of the opening's required skills that the student has.
+            - matched_skills (list[str]): Names of the required skills the student possesses.
     """
     session = db.get_session()
     try:
@@ -101,8 +125,24 @@ def recommend_students_for_opening(opening_id: str, limit: int = 10):
 
 def recommend_openings_for_student(student_id: str, limit: int = 5):
     """
-    Recommend Openings based on Student's Skills.
-    Used for: Student Home Dashboard ("92% Match" card).
+    Recommend openings for a student based on the student's skills and eligibility.
+    
+    Filters out openings the student has already applied to and enforces opening-specific CGPA and target-year constraints; results are ordered by skill match percentage.
+    
+    Parameters:
+        student_id (str): The student's user ID to compute recommendations for.
+        limit (int): Maximum number of openings to return.
+    
+    Returns:
+        List[dict]: Each dict contains:
+            - opening_id: Opening identifier.
+            - title: Opening title.
+            - faculty_id: Posting faculty's user ID.
+            - faculty_name: Posting faculty's name.
+            - faculty_dept: Posting faculty's department.
+            - faculty_pic: Posting faculty's profile picture URL or path.
+            - skills: List of required skill names for the opening.
+            - match_score: Integer percentage (0–100) of required skills the student has.
     """
     session = db.get_session()
     try:
