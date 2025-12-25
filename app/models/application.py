@@ -13,3 +13,19 @@ class ApplicationResponse(BaseModel):
     status: str
     applied_at: str
     match_score: Optional[int] = None
+
+class ApplicationStatusUpdate(BaseModel):
+    status: str  # "pending", "accepted", "rejected"
+
+class ApplicantDetail(BaseModel):
+    application_id: str
+    student_id: str
+    student_name: str
+    student_dept: str
+    student_batch: str
+    student_cgpa: Optional[float]
+    student_pic: Optional[str]
+    status: str
+    applied_at: str
+    match_score: Optional[int] = None
+    matched_skills: list[str] = []
