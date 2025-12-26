@@ -60,7 +60,7 @@ def get_faculty_home(current_user: dict = Depends(get_current_user)):
     try:
         # A. User Info
         user_query = """
-        MATCH (f:Faculty {user_id: $uid})
+        MATCH (f:User {user_id: $uid, role: "faculty"})
         RETURN f.name as name, f.department as dept, f.profile_picture as pic
         """
         user_res = session.run(user_query, uid=user_id).single()
@@ -73,12 +73,19 @@ def get_faculty_home(current_user: dict = Depends(get_current_user)):
 
         # B. Recommended Students (Graph-based matching)
         rec_query = """
-        MATCH (f:Faculty {user_id: $uid})
+        MATCH (f:User {user_id: $uid, role: "faculty"})
         OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)<-[:HAS_SKILL]-(s:Student)
-        WITH s, count(c) as match_count
+        OPTIONAL MATCH (s)-[:HAS_SKILL]->(sk:Concept)
+        WITH s, count(DISTINCT c) AS match_count, collect(DISTINCT sk.name)[0..3] AS skills
         WHERE s IS NOT NULL
-        RETURN s.user_id as id, s.name as name, s.department as dept, s.batch as batch, 
-               s.profile_picture as pic, match_count
+        RETURN 
+            s.user_id AS id,
+            s.name AS name,
+            s.department AS dept,
+            s.batch AS batch,
+            s.profile_picture AS pic,
+            skills,
+            match_count
         ORDER BY match_count DESC
         LIMIT 5
         """

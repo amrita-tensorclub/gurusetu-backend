@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Optional
+from datetime import date
 
 class OpeningCreate(BaseModel):
     title: str
@@ -10,4 +11,4 @@ class OpeningCreate(BaseModel):
     expected_duration: str                 # "Jan 2024 - May 2024"
     target_years: List[str] = []            # ["3rd", "4th"]
     min_cgpa: Optional[float] = None        # 8.0
-    deadline: str                           # "31 Dec 2023"
+    deadline: date                           # "31 Dec 2023"
