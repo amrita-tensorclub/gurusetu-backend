@@ -2,7 +2,6 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 class StudentWorkCreate(BaseModel):
-    user_id: str
     title: str
     type: str             # "Project" or "Publication"
     
