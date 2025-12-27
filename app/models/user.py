@@ -9,14 +9,22 @@ class StudentProject(BaseModel):
     description: str
     tools: List[str] = []
 
+# --- Shared Models ---
+class WorkItem(BaseModel):
+    title: str
+    type: str
+    year: str
+    outcome: Optional[str] = None
+    collaborators: Optional[str] = None
+
 # Base fields shared by everyone
 class UserBase(BaseModel):
     name: Optional[str] = None
     profile_picture: Optional[str] = None
-    phone: Optional[str] = None # Matches "Phone Number" in UI
+    phone: Optional[str] = None 
     department: Optional[str] = None
     bio: Optional[str] = None
-
+    
 class StudentProfileUpdate(UserBase):
     batch: Optional[str] = None
     skills: List[str] = []
@@ -37,13 +45,19 @@ class StudentProfileUpdate(UserBase):
 
 class FacultyProfileUpdate(UserBase):
     designation: Optional[str] = None
-    email: Optional[str] = None # Added for the UI field
+    email: Optional[str] = None
     office_hours: Optional[str] = None
+    
+    # Cabin Details
     cabin_block: Optional[str] = None
-    cabin_floor: Optional[str] = None # Changed to str for flexible input
+    cabin_floor: Optional[str] = None 
     cabin_number: Optional[str] = None
-    # Structured qualifications
+    
+    # Qualifications - These specific lists were missing or misnamed before
     ug_details: List[str] = [] 
     pg_details: List[str] = []
     phd_details: List[str] = []
+
+    # Research
     domain_interests: List[str] = []
+    previous_work: List[WorkItem] = []
