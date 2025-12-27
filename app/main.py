@@ -1,8 +1,10 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware  # <--- IMPORT THIS
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles  # <--- THIS WAS MISSING
 from contextlib import asynccontextmanager
 from app.core.database import db
 import asyncio
+import os
 
 # Import Routers
 from app.routers import (
@@ -28,15 +30,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Guru Setu API", lifespan=lifespan)
 
+# 1. Ensure directory exists
+os.makedirs("uploads", exist_ok=True)
+
+# 2. Mount static files (This line caused the error before)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 # ------------------------------------------------------------
 # CRITICAL FIX: ENABLE CORS (ALLOW FRONTEND TO CONNECT)
 # ------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Allows your Next.js Frontend
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 # ------------------------------------------------------------
 
