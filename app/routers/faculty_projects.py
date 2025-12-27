@@ -127,3 +127,124 @@ def add_faculty_research(
 
     finally:
         session.close()
+
+@router.get("/my-projects")
+def get_my_projects(current_user: dict = Depends(get_current_user)):
+    """
+    Fetches all Openings posted by the current faculty member.
+    Includes stats: applicant count, days remaining, etc.
+    """
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    user_id = current_user["user_id"]
+    session = db.get_session()
+
+    try:
+        # Query: Find Openings posted by Faculty, count Interested Students, fetch Domains
+        query = """
+        MATCH (f:Faculty {user_id: $uid})-[:POSTED]->(o:Opening)
+        
+        // Count Applicants
+        OPTIONAL MATCH (s:Student)-[:INTERESTED_IN]->(o)
+        WITH f, o, count(s) as applicant_count
+
+        // Get Domains (Skills/Concepts required)
+        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)
+        WITH f, o, applicant_count, collect(c.name) as domains
+
+        RETURN o.id as id, 
+               o.title as title, 
+               o.created_at as posted_date,
+               o.deadline as deadline,
+               o.status as status, 
+               domains,
+               applicant_count
+        ORDER BY o.created_at DESC
+        """
+
+        results = session.run(query, uid=user_id)
+        
+        projects = []
+        stats = {
+            "active_projects": 0,
+            "total_applicants": 0,
+            "interviews_set": 0 # Placeholder for future feature
+        }
+
+        for r in results:
+            # Determine status if not set
+            status = r["status"] if r["status"] else "Active"
+            
+            # Simple domain logic (take first 2 skills)
+            domain_label = "General"
+            if r["domains"]:
+                domain_label = r["domains"][0]
+
+            projects.append({
+                "id": r["id"],
+                "title": r["title"],
+                "status": status,
+                "domain": domain_label,
+                "posted_date": r["posted_date"].isoformat().split('T')[0] if r["posted_date"] else "N/A",
+                "applicant_count": r["applicant_count"]
+            })
+
+            # Update Stats
+            if status == "Active":
+                stats["active_projects"] += 1
+            stats["total_applicants"] += r["applicant_count"]
+
+        return {
+            "stats": stats,
+            "projects": projects
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/my-projects/{project_id}/applicants")
+def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Fetches the list of students who applied to a specific project.
+    """
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    session = db.get_session()
+
+    try:
+        query = """
+        MATCH (o:Opening {id: $pid})
+        MATCH (s:Student)-[r:INTERESTED_IN]->(o)
+        RETURN s.user_id as id, 
+               s.name as name, 
+               s.roll_no as roll_no, 
+               s.department as dept, 
+               s.profile_picture as pic,
+               r.date as applied_date
+        ORDER BY r.date DESC
+        """
+        
+        results = session.run(query, pid=project_id)
+        applicants = []
+        
+        for r in results:
+            applicants.append({
+                "student_id": r["id"],
+                "name": r["name"],
+                "roll_no": r["roll_no"],
+                "department": r["dept"],
+                "profile_picture": r["pic"],
+                "applied_date": r["applied_date"].isoformat().split('T')[0] if r["applied_date"] else "Recent"
+            })
+            
+        return applicants
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
