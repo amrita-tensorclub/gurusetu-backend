@@ -112,9 +112,13 @@ def update_faculty_profile(
     user_id = current_user["user_id"]
 
     try:
-        # Update core Faculty node properties
+        # Convert Pydantic models to dicts
+        work_data = [w.dict() for w in profile_data.previous_work]
+
         query = """
         MATCH (f:Faculty {user_id: $uid})
+        
+        // 1. Update Basic Fields
         SET f.name = COALESCE($name, f.name),
             f.phone = COALESCE($phone, f.phone),
             f.designation = COALESCE($designation, f.designation),
@@ -126,8 +130,41 @@ def update_faculty_profile(
             f.ug_details = $ug,
             f.pg_details = $pg,
             f.phd_details = $phd
-        RETURN f
+
+        // 2. Update Domain Interests (Delete old -> Add new)
+        WITH f
+        OPTIONAL MATCH (f)-[r:INTERESTED_IN]->()
+        DELETE r
+        
+        WITH f
+        FOREACH (domain IN $domains | 
+            MERGE (c:Concept {name: toLower(domain)})
+            MERGE (f)-[:INTERESTED_IN]->(c)
+        )
+
+        // 3. FIX DUPLICATION: Aggressively delete ALL previous work relations
+        // We look for WORKED_ON, PUBLISHED, or LED_PROJECT to catch everything.
+        WITH f
+        OPTIONAL MATCH (f)-[r:WORKED_ON|PUBLISHED|LED_PROJECT]->(oldW:Work)
+        DETACH DELETE oldW
+
+        // 4. Create New Work Nodes
+        WITH f
+        FOREACH (w IN $works | 
+            CREATE (newW:Work {
+                title: w.title,
+                type: w.type,
+                year: w.year,
+                outcome: w.outcome,
+                collaborators: w.collaborators,
+                created_at: datetime()
+            })
+            CREATE (f)-[:WORKED_ON]->(newW)
+        )
+
+        RETURN f.user_id as id
         """
+
         session.run(query, 
             uid=user_id,
             name=profile_data.name,
@@ -140,8 +177,14 @@ def update_faculty_profile(
             cn=profile_data.cabin_number,
             ug=profile_data.ug_details,
             pg=profile_data.pg_details,
-            phd=profile_data.phd_details
+            phd=profile_data.phd_details,
+            domains=profile_data.domain_interests,
+            works=work_data
         )
-        return {"status": "success", "message": "Profile updated successfully"}
+        
+        return {"status": "success", "message": "Research profile updated successfully"}
+    except Exception as e:
+        print(f"Error updating profile: {str(e)}") # Debug log
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
