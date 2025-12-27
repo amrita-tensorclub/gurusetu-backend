@@ -4,6 +4,7 @@ from app.core.security import get_current_user
 from app.core.database import db
 import uuid
 from datetime import datetime
+from pydantic import BaseModel
 
 # Optional: If you have the RAG service, keep this. 
 # If not, the code below uses direct database queries as a fallback.
@@ -11,6 +12,9 @@ from datetime import datetime
 
 # --- FIX: Removed prefix="/dashboard" because it's already in main.py ---
 router = APIRouter(tags=["Dashboard"]) 
+
+class ShortlistRequest(BaseModel):
+    opening_id: str
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -45,12 +49,11 @@ def create_notification(tx, user_id, message, type="INFO", trigger_id=None, trig
 # =========================================================
 # 1. DASHBOARD HOME SCREENS
 # =========================================================
-
 @router.get("/faculty/home")
-def get_faculty_home(current_user: dict = Depends(get_current_user)):
-    """
-    Faculty Dashboard Home: User Info, Recommended Students, Collab Preview
-    """
+def get_faculty_home(
+    filter: Optional[str] = None, # <-- Added Filter Param
+    current_user: dict = Depends(get_current_user)
+):
     if current_user["role"].lower() != "faculty":
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -71,11 +74,20 @@ def get_faculty_home(current_user: dict = Depends(get_current_user)):
             "pic": user_res["pic"] if user_res else None
         }
 
-        # B. Recommended Students (Graph-based matching)
+        # B. Recommended Students (With Filter Logic)
         rec_query = """
         MATCH (f:User {user_id: $uid, role: "faculty"})
         OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)<-[:HAS_SKILL]-(s:Student)
         OPTIONAL MATCH (s)-[:HAS_SKILL]->(sk:Concept)
+        """
+
+        # --- FILTER LOGIC ---
+        if filter and filter != "All":
+            # Loose matching on Skills or Department
+            rec_query += f" WHERE toLower(sk.name) CONTAINS toLower('{filter}') OR toLower(s.department) CONTAINS toLower('{filter}') "
+        # --------------------
+
+        rec_query += """
         WITH s, count(DISTINCT c) AS match_count, collect(DISTINCT sk.name)[0..3] AS skills
         WHERE s IS NOT NULL
         RETURN 
@@ -87,25 +99,20 @@ def get_faculty_home(current_user: dict = Depends(get_current_user)):
             skills,
             match_count
         ORDER BY match_count DESC
-        LIMIT 5
+        LIMIT 10
         """
         rec_results = session.run(rec_query, uid=user_id)
         
         recommended_students = []
         for r in rec_results:
-            # Fetch top 3 skills for display
-            skills_q = "MATCH (s:Student {user_id: $sid})-[:HAS_SKILL]->(k:Concept) RETURN k.name LIMIT 3"
-            skills_res = session.run(skills_q, sid=r["id"])
-            skills = [k["k.name"] for k in skills_res]
-
             recommended_students.append({
                 "student_id": r["id"],
                 "name": r["name"],
                 "department": r["dept"],
                 "batch": r["batch"],
                 "profile_picture": r["pic"],
-                "matched_skills": skills,
-                "match_score": f"{min(99, 70 + (r['match_count'] * 5))}%" 
+                "matched_skills": r["skills"],
+                "match_score": f"{min(99, 60 + (r['match_count'] * 10))}%" 
             })
 
         # C. Faculty Collaborations Preview
@@ -129,13 +136,26 @@ def get_faculty_home(current_user: dict = Depends(get_current_user)):
                 "collaboration_type": c["type"]
             })
 
+        # D. Get Active Openings (For Shortlist Modal)
+        # We need this list to populate the popup
+        openings_query = """
+        MATCH (f:Faculty {user_id: $uid})-[:POSTED]->(o:Opening)
+        RETURN o.id as id, o.title as title
+        ORDER BY o.created_at DESC
+        """
+        op_results = session.run(openings_query, uid=user_id)
+        active_openings = [{"id": r["id"], "title": r["title"]} for r in op_results]
+
         return {
             "user_info": user_info,
             "recommended_students": recommended_students,
-            "faculty_collaborations": collaborations
+            "faculty_collaborations": collaborations,
+            "active_openings": active_openings # <-- Sending this for the modal
         }
     finally:
         session.close()
+
+# ... (Keep get_student_dashboard, get_side_menus, get_lists, get_profiles as they were) ...
 
 
 @router.get("/student/home")
@@ -280,16 +300,12 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
             "department": res["dept"] or "General",
             "profile_picture": res["pic"],
             "menu_items": [
-                {"label": "Home", "icon": "home", "route": "/dashboard/faculty/home"},
+                # --- HOME REMOVED ---
                 {"label": "Profile", "icon": "person", "route": "/dashboard/faculty/profile"},
-                
-                # --- FIX: RENAMED TO 'My Openings' ---
-                {"label": "My Openings", "icon": "folder", "route": "/dashboard/faculty/projects"}, 
-                # -------------------------------------
-
+                {"label": "My Openings", "icon": "folder", "route": "/dashboard/faculty/projects"},
                 {"label": "All Students", "icon": "group", "route": "/dashboard/faculty/all-students"},
                 {"label": "Faculty Collaborations", "icon": "link", "route": "/dashboard/faculty/collaborations"},
-                {"label": "Help & Support", "icon": "help", "route": "/support"},
+                {"label": "Help & Support", "icon": "help", "route": "/dashboard/faculty/support"},
                 {"label": "Logout", "icon": "logout", "route": "/logout"}
             ]
         }
@@ -347,14 +363,21 @@ def get_collaborations(search: str = None, department: str = None, collab_type: 
 
 
 @router.get("/faculty/all-students")
-def get_all_students(search: str = None, current_user: dict = Depends(get_current_user)):
+def get_all_students(
+    search: Optional[str] = None, 
+    department: Optional[str] = None,  # <--- Added
+    batch: Optional[str] = None,       # <--- Added
+    current_user: dict = Depends(get_current_user)
+):
     if current_user["role"].lower() != "faculty":
         raise HTTPException(status_code=403, detail="Access denied")
 
     session = db.get_session()
     try:
+        # Base query
         query = "MATCH (s:Student) WHERE s.name IS NOT NULL"
         
+        # 1. Search Filter (Name or Skills)
         if search:
             query += """
             AND (
@@ -365,7 +388,16 @@ def get_all_students(search: str = None, current_user: dict = Depends(get_curren
                 }
             )
             """
+        
+        # 2. Department Filter
+        if department:
+            query += " AND s.department = $dept"
+
+        # 3. Batch Filter
+        if batch:
+            query += " AND s.batch = $batch"
             
+        # Return Results
         query += """
         OPTIONAL MATCH (s)-[:HAS_SKILL]->(k:Concept)
         RETURN s.user_id as id, s.name as name, s.department as dept, 
@@ -375,7 +407,7 @@ def get_all_students(search: str = None, current_user: dict = Depends(get_curren
         LIMIT 50
         """
         
-        results = session.run(query, search=search)
+        results = session.run(query, search=search, dept=department, batch=batch)
         students = []
         for r in results:
             students.append({
@@ -606,18 +638,22 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
 # =========================================================
 
 @router.post("/shortlist/{student_id}")
-def shortlist_student(student_id: str, current_user: dict = Depends(get_current_user)):
+def shortlist_student(
+    student_id: str, 
+    request: ShortlistRequest, # <-- Now accepts opening_id in body
+    current_user: dict = Depends(get_current_user)
+):
     session = db.get_session()
     try:
+        # Create relationship between Opening and Student
         query = """
-        MATCH (f:Faculty {user_id: $fid}), (s:Student {user_id: $sid})
-        MERGE (f)-[:SHORTLISTED]->(s)
+        MATCH (o:Opening {id: $oid}), (s:Student {user_id: $sid})
+        MERGE (o)-[:SHORTLISTED]->(s)
         """
-        session.run(query, fid=current_user["user_id"], sid=student_id)
-        return {"message": "Student shortlisted"}
+        session.run(query, oid=request.opening_id, sid=student_id)
+        return {"message": "Student shortlisted for opening"}
     finally:
         session.close()
-
 
 @router.post("/express-interest/{project_id}")
 def express_interest(project_id: str, current_user: dict = Depends(get_current_user)):
