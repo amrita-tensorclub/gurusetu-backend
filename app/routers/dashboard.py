@@ -501,24 +501,27 @@ def get_student_public_profile(student_id: str, current_user: dict = Depends(get
         session.close()
 
 
+# ... imports ...
+
+# ... (Keep imports)
+
 @router.get("/student/faculty-profile/{faculty_id}")
 def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get_current_user)):
-    # Allow BOTH 'student' and 'faculty' to view
     if current_user["role"].lower() not in ["student", "faculty"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
     session = db.get_session()
-    response_data = {}
     
     try:
-        # 1. Fetch Basic Info
+        # Fetch individual qualification lists
         profile_query = """
-        MATCH (f:Faculty {user_id: $fid})
+        MATCH (f:User {user_id: $fid})
         OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)
         RETURN f.name as name, f.department as dept, f.designation as designation,
-               f.email as email, f.profile_picture as pic,
+               f.email as email, f.phone as phone, f.profile_picture as pic,
                f.cabin_block as block, f.cabin_floor as floor, f.cabin_number as cabin_no,
-               f.office_hours as office_hours, f.qualifications as qualifications,
+               f.office_hours as office_hours, 
+               f.ug_details as ug, f.pg_details as pg, f.phd_details as phd,
                collect(DISTINCT c.name) as interests
         """
         profile = session.run(profile_query, fid=faculty_id).single()
@@ -526,19 +529,26 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
         if not profile:
             raise HTTPException(status_code=404, detail="Faculty not found")
 
-        cabin_str = "Not Updated"
-        if profile["cabin_no"]:
-            cabin_str = f"Block {profile['block']}, Floor {profile['floor']}, Cabin {profile['cabin_no']}"
-
+        # Map backend fields to frontend JSON structure
         response_data = {
             "info": {
                 "name": profile["name"],
                 "designation": profile["designation"],
                 "department": profile["dept"],
                 "email": profile["email"],
+                "phone": profile["phone"] or "",
                 "profile_picture": profile["pic"],
-                "qualifications": profile["qualifications"] or [],
-                "cabin_location": cabin_str,
+                
+                # Cabin Raw Data
+                "cabin_block": profile["block"] or "",
+                "cabin_floor": profile["floor"] or "",
+                "cabin_number": profile["cabin_no"] or "",
+                
+                # Qualification Lists
+                "ug_details": profile["ug"] or [],
+                "pg_details": profile["pg"] or [],
+                "phd_details": profile["phd"] or [],
+                
                 "interests": profile["interests"],
                 "availability_status": "Available Now"
             },
@@ -547,9 +557,10 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
             "previous_work": []
         }
 
-        # 2. FIX: Fetch Openings (Looking for 'POSTED')
+        # ... (Keep Openings & Work queries as they were) ...
+        # Fetch Openings
         openings_query = """
-        MATCH (f:Faculty {user_id: $fid})-[:POSTED]->(o:Opening)
+        MATCH (f:User {user_id: $fid})-[:POSTED]->(o:Opening)
         RETURN o.id as id, o.title as title, o.description as desc
         ORDER BY o.created_at DESC
         """
@@ -562,13 +573,16 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
                 "description": o["desc"]
             })
 
-        # 3. FIX: Fetch Previous Work (Looking for 'WORKED_ON')
-        # We use DISTINCT to prevent any accidental query duplication
+# ... (inside get_faculty_public_profile) ...
+
+        # Fetch Previous Work
         work_query = """
-        MATCH (f:Faculty {user_id: $fid})-[:WORKED_ON]->(w:Work)
-        RETURN DISTINCT w.title as title, w.type as type, w.year as year, w.outcome as outcome, w.collaborators as collaborators
+        MATCH (f:User {user_id: $fid})-[:WORKED_ON|PUBLISHED|LED_PROJECT]->(w:Work)
+        RETURN w.title as title, w.type as type, w.year as year, w.outcome as outcome, w.collaborators as collaborators
         ORDER BY w.year DESC
+        LIMIT 20 
         """
+# ...
         works = session.run(work_query, fid=faculty_id)
         for w in works:
             response_data["previous_work"].append({
@@ -582,8 +596,6 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
         return response_data
     finally:
         session.close()
-
-
 # =========================================================
 # 5. ACTIONS & NOTIFICATIONS
 # =========================================================
