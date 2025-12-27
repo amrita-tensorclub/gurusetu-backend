@@ -11,9 +11,9 @@ class StudentProject(BaseModel):
 
 # Base fields shared by everyone
 class UserBase(BaseModel):
-    name: Optional[str] = None              # UI: Editable Name
-    profile_picture: Optional[str] = None   # UI: Camera Icon/Image
-    phone: Optional[str] = None
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    phone: Optional[str] = None # Matches "Phone Number" in UI
     department: Optional[str] = None
     bio: Optional[str] = None
 
@@ -36,16 +36,14 @@ class StudentProfileUpdate(UserBase):
         return v
 
 class FacultyProfileUpdate(UserBase):
-    designation: Optional[str] = None       
-    office_hours: Optional[str] = None      
-    cabin_block: Optional[str] = None       
-    cabin_floor: Optional[int] = None       
-    cabin_number: Optional[str] = None      
-    qualifications: List[str] = []          
-    domain_interests: List[str] = []        
-
-    @validator('domain_interests')
-    def validate_interests_limit(cls, v):
-        if len(v) > 15:
-            raise ValueError(f'Maximum 15 research interests allowed. You have {len(v)}.')
-        return v
+    designation: Optional[str] = None
+    email: Optional[str] = None # Added for the UI field
+    office_hours: Optional[str] = None
+    cabin_block: Optional[str] = None
+    cabin_floor: Optional[str] = None # Changed to str for flexible input
+    cabin_number: Optional[str] = None
+    # Structured qualifications
+    ug_details: List[str] = [] 
+    pg_details: List[str] = []
+    phd_details: List[str] = []
+    domain_interests: List[str] = []

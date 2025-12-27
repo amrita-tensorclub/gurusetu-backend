@@ -102,71 +102,46 @@ def update_student_profile(
 
 @router.put("/faculty/profile")
 def update_faculty_profile(
-    data: FacultyProfileUpdate,
-    current_user: dict = Depends(get_current_user),
+    profile_data: FacultyProfileUpdate, 
+    current_user: dict = Depends(get_current_user)
 ):
     if current_user["role"].lower() != "faculty":
-        raise HTTPException(
-            status_code=403,
-            detail="Only faculty can update faculty profiles",
-        )
+        raise HTTPException(status_code=403, detail="Access denied")
 
-    user_id = current_user["user_id"]
     session = db.get_session()
+    user_id = current_user["user_id"]
 
     try:
+        # Update core Faculty node properties
         query = """
-        MATCH (u:User {user_id: $user_id})
-        SET u.name = COALESCE($name, u.name),
-            u.profile_picture = COALESCE($profile_picture, u.profile_picture),
-            u.phone = $phone,
-            u.department = $dept,
-            u.bio = $bio,
-            u.designation = $designation,
-            u.office_hours = $office_hours,
-            u.cabin_block = $cabin_block,
-            u.cabin_floor = $cabin_floor,
-            u.cabin_number = $cabin_number,
-            u.qualifications = $qualifications
-
-        WITH u
-        OPTIONAL MATCH (u)-[r:INTERESTED_IN]->()
-        DELETE r
-
-        WITH u
-        FOREACH (interest IN $domain_interests |
-            MERGE (i:Concept {name: toLower(interest)})
-            MERGE (u)-[:INTERESTED_IN]->(i)
-        )
-
-        RETURN u.user_id AS user_id
+        MATCH (f:Faculty {user_id: $uid})
+        SET f.name = COALESCE($name, f.name),
+            f.phone = COALESCE($phone, f.phone),
+            f.designation = COALESCE($designation, f.designation),
+            f.department = COALESCE($dept, f.department),
+            f.office_hours = COALESCE($oh, f.office_hours),
+            f.cabin_block = COALESCE($cb, f.cabin_block),
+            f.cabin_floor = COALESCE($cf, f.cabin_floor),
+            f.cabin_number = COALESCE($cn, f.cabin_number),
+            f.ug_details = $ug,
+            f.pg_details = $pg,
+            f.phd_details = $phd
+        RETURN f
         """
-
-        result = session.run(
-            query,
-            user_id=user_id,
-            name=data.name,
-            profile_picture=data.profile_picture,
-            phone=data.phone,
-            dept=data.department,
-            bio=data.bio,
-            designation=data.designation,
-            office_hours=data.office_hours,
-            cabin_block=data.cabin_block,
-            cabin_floor=data.cabin_floor,
-            cabin_number=data.cabin_number,
-            qualifications=data.qualifications,
-            domain_interests=data.domain_interests,
-        ).single()
-
-        if not result:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        return {"message": "Faculty profile updated successfully"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        session.run(query, 
+            uid=user_id,
+            name=profile_data.name,
+            phone=profile_data.phone,
+            designation=profile_data.designation,
+            dept=profile_data.department,
+            oh=profile_data.office_hours,
+            cb=profile_data.cabin_block,
+            cf=profile_data.cabin_floor,
+            cn=profile_data.cabin_number,
+            ug=profile_data.ug_details,
+            pg=profile_data.pg_details,
+            phd=profile_data.phd_details
+        )
+        return {"status": "success", "message": "Profile updated successfully"}
     finally:
         session.close()
