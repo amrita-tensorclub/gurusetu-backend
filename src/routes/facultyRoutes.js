@@ -8,5 +8,6 @@ router.get('/', facultyController.getAllFaculty);
 router.post('/:id/request', facultyController.requestUpdate);
 // PUT /api/faculty/:id/status (Optional: for manual updates via API)
 router.put('/:id/status', facultyController.updateStatus);
-
+// POST /api/faculty/:id/future
+router.post('/:id/future', facultyController.checkFutureAvailability);
 module.exports = router;

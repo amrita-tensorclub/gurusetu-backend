@@ -72,3 +72,47 @@ exports.updateStatus = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+// 4. CHECK FUTURE AVAILABILITY
+exports.checkFutureAvailability = async (req, res) => {
+    const { id } = req.params; // Faculty ID
+    const { datetime } = req.body; // e.g. "2023-12-25T10:00"
+
+    try {
+        const dateObj = new Date(datetime);
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const dayOfWeek = days[dateObj.getDay()];
+        
+        // Format time as HH:MM:00 for SQL comparison
+        const timeStr = dateObj.toTimeString().split(' ')[0]; 
+
+        // Query the Timetable Table
+        const { data, error } = await supabase
+            .from('timetables')
+            .select('*')
+            .eq('faculty_id', id)
+            .eq('day_of_week', dayOfWeek)
+            .lte('start_time', timeStr) // Class started before or at this time
+            .gte('end_time', timeStr);  // And ends after this time
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+            // Found a class!
+            res.status(200).json({ 
+                status: 'Busy', 
+                activity: data[0].activity,
+                message: `In ${data[0].activity} (${data[0].start_time} - ${data[0].end_time})`
+            });
+        } else {
+            // No class found
+            res.status(200).json({ 
+                status: 'Available', 
+                message: 'Free according to timetable' 
+            });
+        }
+
+    } catch (err) {
+        console.error("Future Check Error:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
