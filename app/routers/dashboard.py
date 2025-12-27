@@ -511,6 +511,7 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
     response_data = {}
     
     try:
+        # 1. Fetch Basic Info
         profile_query = """
         MATCH (f:Faculty {user_id: $fid})
         OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)
@@ -518,7 +519,7 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
                f.email as email, f.profile_picture as pic,
                f.cabin_block as block, f.cabin_floor as floor, f.cabin_number as cabin_no,
                f.office_hours as office_hours, f.qualifications as qualifications,
-               collect(c.name) as interests
+               collect(DISTINCT c.name) as interests
         """
         profile = session.run(profile_query, fid=faculty_id).single()
         
@@ -546,7 +547,7 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
             "previous_work": []
         }
 
-        # Openings
+        # 2. FIX: Fetch Openings (Looking for 'POSTED')
         openings_query = """
         MATCH (f:Faculty {user_id: $fid})-[:POSTED]->(o:Opening)
         RETURN o.id as id, o.title as title, o.description as desc
@@ -557,16 +558,16 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
             response_data["openings"].append({
                 "id": o["id"],
                 "title": o["title"],
-                "type": "Mini Project",
+                "type": "Project Opening",
                 "description": o["desc"]
             })
 
-        # Research
+        # 3. FIX: Fetch Previous Work (Looking for 'WORKED_ON')
+        # We use DISTINCT to prevent any accidental query duplication
         work_query = """
-        MATCH (f:Faculty {user_id: $fid})-[:PUBLISHED|LED_PROJECT]->(w:Work)
-        RETURN w.title as title, w.type as type, w.year as year, w.outcome as outcome
+        MATCH (f:Faculty {user_id: $fid})-[:WORKED_ON]->(w:Work)
+        RETURN DISTINCT w.title as title, w.type as type, w.year as year, w.outcome as outcome, w.collaborators as collaborators
         ORDER BY w.year DESC
-        LIMIT 5
         """
         works = session.run(work_query, fid=faculty_id)
         for w in works:
@@ -574,12 +575,14 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
                 "title": w["title"],
                 "type": w["type"],
                 "year": w["year"],
-                "outcome": w["outcome"]
+                "outcome": w["outcome"],
+                "collaborators": w["collaborators"]
             })
 
         return response_data
     finally:
         session.close()
+
 
 # =========================================================
 # 5. ACTIONS & NOTIFICATIONS
