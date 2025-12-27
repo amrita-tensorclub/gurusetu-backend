@@ -246,7 +246,7 @@ def get_student_side_menu(current_user: dict = Depends(get_current_user)):
             "menu_items": [
                 {"label": "Home", "icon": "home", "route": "/student/home"},
                 {"label": "Profile", "icon": "person", "route": "/student/profile"},
-                {"label": "My Projects", "icon": "folder", "route": "/student/projects"},
+                {"label": "My Openings", "icon": "folder", "route": "/student/projects"},
                 {"label": "Help & Support", "icon": "help", "route": "/support"},
                 {"label": "All Faculty", "icon": "group", "route": "/student/all-faculty"},
                 {"label": "Logout", "icon": "logout", "route": "/logout"}
@@ -255,6 +255,8 @@ def get_student_side_menu(current_user: dict = Depends(get_current_user)):
     finally:
         session.close()
 
+
+# ... inside backend/app/routers/dashboard.py
 
 @router.get("/faculty/menu")
 def get_faculty_menu(current_user: dict = Depends(get_current_user)):
@@ -278,18 +280,21 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
             "department": res["dept"] or "General",
             "profile_picture": res["pic"],
             "menu_items": [
-                {"label": "Home", "icon": "home", "route": "/faculty/home"},
-                {"label": "Profile", "icon": "person", "route": "/faculty/profile"},
-                {"label": "My Projects", "icon": "folder", "route": "/faculty/projects"},
-                {"label": "All Students", "icon": "group", "route": "/faculty/all-students"},
-                {"label": "Faculty Collaborations", "icon": "link", "route": "/faculty/collaborations"},
+                {"label": "Home", "icon": "home", "route": "/dashboard/faculty/home"},
+                {"label": "Profile", "icon": "person", "route": "/dashboard/faculty/profile"},
+                
+                # --- FIX: RENAMED TO 'My Openings' ---
+                {"label": "My Openings", "icon": "folder", "route": "/dashboard/faculty/projects"}, 
+                # -------------------------------------
+
+                {"label": "All Students", "icon": "group", "route": "/dashboard/faculty/all-students"},
+                {"label": "Faculty Collaborations", "icon": "link", "route": "/dashboard/faculty/collaborations"},
                 {"label": "Help & Support", "icon": "help", "route": "/support"},
                 {"label": "Logout", "icon": "logout", "route": "/logout"}
             ]
         }
     finally:
         session.close()
-
 # =========================================================
 # 3. LISTS & SEARCH (Collaborations, All Students, All Faculty)
 # =========================================================
