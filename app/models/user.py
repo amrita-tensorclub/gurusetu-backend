@@ -12,10 +12,10 @@ class StudentProject(BaseModel):
 # --- Shared Models ---
 class WorkItem(BaseModel):
     title: str
-    type: str  # e.g., "Publication", "Project"
+    type: str
     year: str
-    outcome: Optional[str] = None # e.g., "Published in IEEE"
-    collaborators: Optional[str] = None # e.g., "Dr. A, Mr. B"
+    outcome: Optional[str] = None
+    collaborators: Optional[str] = None
 
 # Base fields shared by everyone
 class UserBase(BaseModel):
@@ -24,6 +24,7 @@ class UserBase(BaseModel):
     phone: Optional[str] = None 
     department: Optional[str] = None
     bio: Optional[str] = None
+    
 class StudentProfileUpdate(UserBase):
     batch: Optional[str] = None
     skills: List[str] = []
@@ -46,15 +47,17 @@ class FacultyProfileUpdate(UserBase):
     designation: Optional[str] = None
     email: Optional[str] = None
     office_hours: Optional[str] = None
+    
+    # Cabin Details
     cabin_block: Optional[str] = None
     cabin_floor: Optional[str] = None 
     cabin_number: Optional[str] = None
     
-    # Research & Experience Fields
-    domain_interests: List[str] = []
-    previous_work: List[WorkItem] = []  # <--- Added This
-    
-    # Education
+    # Qualifications - These specific lists were missing or misnamed before
     ug_details: List[str] = [] 
     pg_details: List[str] = []
     phd_details: List[str] = []
+
+    # Research
+    domain_interests: List[str] = []
+    previous_work: List[WorkItem] = []
