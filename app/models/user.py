@@ -24,13 +24,23 @@ class UserBase(BaseModel):
     phone: Optional[str] = None 
     department: Optional[str] = None
     bio: Optional[str] = None
+class ProjectCreate(BaseModel):  # <--- MUST BE DEFINED BEFORE StudentProfileUpdate
+    title: str
+    description: str
+    from_date: str
+    to_date: str
+    tools: List[str]
     
-class StudentProfileUpdate(UserBase):
+class StudentProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
     batch: Optional[str] = None
+    bio: Optional[str] = None
     skills: List[str] = []
     interests: List[str] = []
-    projects: List[StudentProject] = []  # <--- ADDED THIS FIELD
-
+    projects: List[ProjectCreate] = []
     @validator('skills')
     def validate_skills_limit(cls, v):
         if len(v) > 20:
@@ -43,21 +53,25 @@ class StudentProfileUpdate(UserBase):
             raise ValueError(f'Maximum 20 interests allowed. You have {len(v)}.')
         return v
 
-class FacultyProfileUpdate(UserBase):
-    designation: Optional[str] = None
+# --- Faculty Models (THIS WAS MISSING OR INCOMPLETE) ---
+class FacultyProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
     email: Optional[str] = None
+    phone: Optional[str] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
     office_hours: Optional[str] = None
     
-    # Cabin Details
+    # Cabin
     cabin_block: Optional[str] = None
-    cabin_floor: Optional[str] = None 
+    cabin_floor: Optional[str] = None
     cabin_number: Optional[str] = None
     
-    # Qualifications - These specific lists were missing or misnamed before
-    ug_details: List[str] = [] 
+    # Qualifications
+    ug_details: List[str] = []
     pg_details: List[str] = []
     phd_details: List[str] = []
-
-    # Research
+    
     domain_interests: List[str] = []
     previous_work: List[WorkItem] = []
