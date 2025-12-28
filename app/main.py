@@ -14,7 +14,9 @@ from app.routers import (
     recommendations, 
     student_projects, 
     faculty_projects, 
-    dashboard
+    dashboard,
+    applications,
+    notifications
 )
 
 @asynccontextmanager
@@ -60,3 +62,5 @@ app.include_router(recommendations.router, prefix="/recommend", tags=["AI"])
 app.include_router(student_projects.router, prefix="/student-projects", tags=["Student Portfolio"])
 app.include_router(faculty_projects.router, prefix="/faculty-projects", tags=["Faculty Research"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+app.include_router(applications.router, prefix="/applications", tags=["Applications"]) # <--- NEW REGISTER
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"]) # <--- 2. REGISTER IT
