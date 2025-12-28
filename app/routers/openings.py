@@ -22,6 +22,8 @@ def create_opening(
     opening_id = str(uuid.uuid4())
 
     try:
+ # ... inside create_opening function ...
+
         query = """
         MATCH (f:User {user_id: $faculty_id})
 
@@ -33,6 +35,7 @@ def create_opening(
             target_years: $target_years,
             min_cgpa: $min_cgpa,
             deadline: $deadline,
+            status: 'Active',  // <--- ADD THIS LINE
             created_at: datetime()
         })
 
@@ -45,6 +48,7 @@ def create_opening(
 
         RETURN o.id AS id
         """
+# ... rest of the file
 
         session.run(
             query,
