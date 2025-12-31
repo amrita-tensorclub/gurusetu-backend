@@ -7,3 +7,5 @@ env/
 venv/
 *.swp
 .DS_Store
+
+uploads/
