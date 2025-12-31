@@ -1,17 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.security import get_current_user
 from app.services.rag_service import (
     recommend_students_for_faculty,
     recommend_students_for_opening,
     recommend_faculty_for_student,
-    recommend_openings_for_student
+    recommend_openings_for_student,
+    semantic_search_students,
+    semantic_search_faculty
 )
 
-router = APIRouter()
+router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 
 # --------------------------------------------------------------------------
-# 1. FACULTY ENDPOINTS
+# 1. FACULTY ENDPOINTS (GRAPH-BASED RECOMMENDATIONS)
 # --------------------------------------------------------------------------
 
 @router.get("/faculty/students")
@@ -21,7 +22,7 @@ def get_student_recommendations_for_dashboard(
 ):
     """
     Get recommended students for the logged-in Faculty member.
-    (General matching based on interests)
+    Logic: Shared interests & skills (graph-based)
     """
     if current_user["role"].lower() != "faculty":
         raise HTTPException(
@@ -29,7 +30,6 @@ def get_student_recommendations_for_dashboard(
             detail="Only faculty can access this endpoint"
         )
 
-    # Returns list with 'match_score' (percentage) and 'profile_picture'
     return recommend_students_for_faculty(
         faculty_id=current_user["user_id"],
         limit=limit
@@ -43,7 +43,8 @@ def get_candidates_for_opening(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Get recommended students for a SPECIFIC Opening posted by the faculty.
+    Get recommended students for a SPECIFIC opening.
+    Logic: Skill match + CGPA + batch constraints
     """
     if current_user["role"].lower() != "faculty":
         raise HTTPException(
@@ -58,7 +59,7 @@ def get_candidates_for_opening(
 
 
 # --------------------------------------------------------------------------
-# 2. STUDENT ENDPOINTS
+# 2. STUDENT ENDPOINTS (GRAPH-BASED RECOMMENDATIONS)
 # --------------------------------------------------------------------------
 
 @router.get("/student/mentors")
@@ -68,6 +69,7 @@ def get_faculty_mentors(
 ):
     """
     Get recommended Faculty mentors for the logged-in Student.
+    Logic: Shared interests (graph-based)
     """
     if current_user["role"].lower() != "student":
         raise HTTPException(
@@ -87,7 +89,8 @@ def get_opening_recommendations(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Get recommended Research Openings for the logged-in Student.
+    Get recommended research openings for the logged-in Student.
+    Logic: Skill overlap + constraints
     """
     if current_user["role"].lower() != "student":
         raise HTTPException(
@@ -99,3 +102,37 @@ def get_opening_recommendations(
         student_id=current_user["user_id"],
         limit=limit
     )
+
+
+# --------------------------------------------------------------------------
+# 3. SEMANTIC SEARCH ENDPOINTS (VECTOR-BASED)
+# --------------------------------------------------------------------------
+
+@router.get("/search/students")
+def semantic_student_search(
+    q: str = Query(..., description="Search query"),
+    limit: int = 5,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Semantic search for students using vector similarity.
+    Example queries:
+    - "machine learning and NLP"
+    - "python backend developer"
+    """
+    return semantic_search_students(q, limit)
+
+
+@router.get("/search/faculty")
+def semantic_faculty_search(
+    q: str = Query(..., description="Search query"),
+    limit: int = 5,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Semantic search for faculty using research profile embeddings.
+    Example queries:
+    - "computer networks security"
+    - "deep learning researcher"
+    """
+    return semantic_search_faculty(q, limit)
