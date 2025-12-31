@@ -205,26 +205,26 @@ def get_my_projects(current_user: dict = Depends(get_current_user)):
         session.close()
 
 
-@router.get("/my-projects/{project_id}/applicants")
-def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
-    """ Get students who expressed interest """
-    if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Access denied")
+# @router.get("/my-projects/{project_id}/applicants")
+# def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
+#     """ Get students who expressed interest """
+#     if current_user["role"].lower() != "faculty":
+#         raise HTTPException(status_code=403, detail="Access denied")
 
-    session = db.get_session()
-    try:
-        query = """
-        MATCH (o:Opening {id: $pid})
-        MATCH (s:Student)-[r:INTERESTED_IN]->(o)
-        RETURN s.user_id as id, s.name as name, s.roll_no as roll_no, 
-               s.department as dept, s.profile_picture as pic
-        ORDER BY r.date DESC
-        """
-        results = session.run(query, pid=project_id)
-        return [{"student_id": r["id"], "name": r["name"], "roll_no": r["roll_no"], 
-                 "department": r["dept"], "profile_picture": r["pic"]} for r in results]
-    finally:
-        session.close()
+#     session = db.get_session()
+#     try:
+#         query = """
+#         MATCH (o:Opening {id: $pid})
+#         MATCH (s:Student)-[r:INTERESTED_IN]->(o)
+#         RETURN s.user_id as id, s.name as name, s.roll_no as roll_no, 
+#                s.department as dept, s.profile_picture as pic
+#         ORDER BY r.date DESC
+#         """
+#         results = session.run(query, pid=project_id)
+#         return [{"student_id": r["id"], "name": r["name"], "roll_no": r["roll_no"], 
+#                  "department": r["dept"], "profile_picture": r["pic"]} for r in results]
+#     finally:
+#         session.close()
 
 
 @router.get("/my-projects/{project_id}/shortlisted")
