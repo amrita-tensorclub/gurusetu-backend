@@ -9,6 +9,7 @@ from app.core.security import (
     create_access_token,
 )
 from app.models.auth import UserRegister, UserLogin
+from app.services.embedding import generate_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,11 @@ def register_user(user: UserRegister):
                 detail="Invalid role. Must be 'student' or 'faculty'",
             )
 
-        # 4. Create user node
+        # 4. Generate embedding (VERY IMPORTANT)
+        profile_text = f"{user.name} {user.role}"
+        embedding = generate_embedding(profile_text)
+
+        # 5. Create user node WITH embedding
         query_create = f"""
         CREATE (u:User:{role_label} {{
             user_id: $user_id,
@@ -50,6 +55,7 @@ def register_user(user: UserRegister):
             role: $role,
             roll_no: $roll_no,
             employee_id: $employee_id,
+            embedding: $embedding,
             is_active: true
         }})
         RETURN u.user_id AS id
@@ -64,6 +70,7 @@ def register_user(user: UserRegister):
             role=user.role,
             roll_no=user.roll_no,
             employee_id=user.employee_id,
+            embedding=embedding,
         )
 
         return {"message": "User registered successfully", "user_id": user_id}
@@ -103,10 +110,8 @@ def login_user(user: UserLogin):
         return {"access_token": access_token, "token_type": "bearer"}
 
     except HTTPException:
-        # Preserve expected validation/auth errors
         raise
     except Exception:
-        # Log internal error but do NOT leak details
         logger.exception("Unexpected error during user login")
         raise HTTPException(
             status_code=500,
