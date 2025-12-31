@@ -8,16 +8,17 @@ import os
 
 # Import Routers
 from app.routers import (
-    auth, 
-    users, 
-    openings, 
-    recommendations, 
-    student_projects, 
-    faculty_projects, 
+    auth,
+    users,
+    openings,
+    recommendations,
+    student_projects,
+    faculty_projects,
     dashboard,
     applications,
     notifications
 )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,17 +51,38 @@ app.add_middleware(
 )
 # ------------------------------------------------------------
 
+
 @app.get("/")
 def read_root():
     return {"message": "Guru Setu Backend is Running 🚀"}
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    session = None
+    try:
+        session = db.get_session()
+        session.run("RETURN 1")
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
+    finally:
+        if session:
+            session.close()
+
 
 # Register Routers
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(users.router, prefix="/users", tags=["Profiles"])
 app.include_router(openings.router, prefix="/openings", tags=["Openings"])
 app.include_router(recommendations.router, prefix="/recommend", tags=["AI"])
-app.include_router(student_projects.router, prefix="/student-projects", tags=["Student Portfolio"])
-app.include_router(faculty_projects.router, prefix="/faculty-projects", tags=["Faculty Research"])
+app.include_router(student_projects.router,
+                   prefix="/student-projects", tags=["Student Portfolio"])
+app.include_router(faculty_projects.router,
+                   prefix="/faculty-projects", tags=["Faculty Research"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
-app.include_router(applications.router, prefix="/applications", tags=["Applications"]) # <--- NEW REGISTER
-app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"]) # <--- 2. REGISTER IT
+app.include_router(applications.router, prefix="/applications",
+                   tags=["Applications"])  # <--- NEW REGISTER
+app.include_router(notifications.router, prefix="/notifications",
+                   tags=["Notifications"])  # <--- 2. REGISTER IT
