@@ -1,14 +1,83 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
-# We import models from the file you renamed to 'user.py' (singular)
-from app.models.user import StudentProfileUpdate, FacultyProfileUpdate
+from pydantic import BaseModel
+from typing import List, Optional
 from app.core.database import db
 from app.core.security import get_current_user
 import shutil
 import uuid
 import os
+import json 
 from datetime import datetime
 
 router = APIRouter()
+
+# ==========================================
+# 1. MODELS
+# ==========================================
+
+# --- Shared Models ---
+class WorkItem(BaseModel):
+    title: str
+    type: str
+    year: str
+    outcome: Optional[str] = None
+    collaborators: Optional[str] = None
+
+class ProjectCreate(BaseModel):
+    title: str
+    description: str
+    duration: Optional[str] = "" 
+    from_date: Optional[str] = ""
+    to_date: Optional[str] = ""
+    tools: List[str] = []
+
+class PublicationItem(BaseModel):
+    title: str
+    year: str
+    publisher: Optional[str] = ""
+    link: Optional[str] = ""
+
+# --- Student Profile Model ---
+class StudentProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    batch: Optional[str] = None
+    bio: Optional[str] = None
+    profile_picture: Optional[str] = None
+    
+    skills: List[str] = []
+    interests: List[str] = []
+    projects: List[ProjectCreate] = []
+    publications: List[PublicationItem] = [] 
+
+# --- Faculty Profile Model ---
+class FacultyProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    office_hours: Optional[str] = None
+    
+    cabin_block: Optional[str] = None
+    cabin_floor: Optional[str] = None
+    cabin_number: Optional[str] = None
+    
+    ug_details: List[str] = []
+    pg_details: List[str] = []
+    phd_details: List[str] = []
+    
+    domain_interests: List[str] = []
+    previous_work: List[WorkItem] = []
+    
+    current_status: Optional[str] = None  
+    status_source: Optional[str] = None   
+
+# ==========================================
+# 2. ROUTES
+# ==========================================
 
 # --- A. Upload Picture ---
 @router.post("/upload-profile-picture")
@@ -20,8 +89,8 @@ async def upload_profile_picture(file: UploadFile = File(...)):
         file_path = f"uploads/{unique_filename}"
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        # Update this IP if your network changes
-        return {"url": f"http://10.169.201.42:8000/uploads/{unique_filename}"}
+        # Ensure this matches your actual server URL or localhost
+        return {"url": f"http://127.0.0.1:8000/uploads/{unique_filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -30,6 +99,7 @@ async def upload_profile_picture(file: UploadFile = File(...)):
 def get_student_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
     try:
+        # Fetch Basic Info
         query = """
         MATCH (u:User {user_id: $uid})
         OPTIONAL MATCH (u)-[:HAS_SKILL]->(s:Concept)
@@ -48,9 +118,8 @@ def get_student_profile(user_id: str, current_user: dict = Depends(get_current_u
         # Fetch Projects
         proj_query = """
         MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work {type: 'Student Project'})
-        RETURN w.title as title, w.description as description, 
-               w.duration as duration, w.from_date as from_date, w.to_date as to_date, 
-               w.tools as tools
+        RETURN w.title as title, w.description as description, w.from_date as from_date, 
+               w.to_date as to_date, w.tools as tools, w.duration as duration
         """
         projects = [dict(record) for record in session.run(proj_query, uid=user_id)]
 
@@ -84,6 +153,7 @@ def update_student_profile(
         query = """
         MATCH (u:User {user_id: $user_id})
         
+        // 1. Update Basic Info
         SET u.name = COALESCE($name, u.name),
             u.profile_picture = $profile_picture,
             u.phone = $phone,
@@ -91,6 +161,7 @@ def update_student_profile(
             u.batch = $batch,
             u.bio = $bio
 
+        // 2. Clean Old Relations
         WITH u
         OPTIONAL MATCH (u)-[r:HAS_SKILL|INTERESTED_IN]->() DELETE r
         WITH u
@@ -98,42 +169,30 @@ def update_student_profile(
         WITH u
         OPTIONAL MATCH (u)-[:PUBLISHED]->(oldPub:Work {type: 'Publication'}) DETACH DELETE oldPub
 
+        // 3. Add Skills & Interests
         WITH u
-        FOREACH (skill IN $skills | 
-            MERGE (s:Concept {name: toLower(skill)}) 
-            MERGE (u)-[:HAS_SKILL]->(s)
-        )
-        FOREACH (interest IN $interests | 
-            MERGE (i:Concept {name: toLower(interest)}) 
-            MERGE (u)-[:INTERESTED_IN]->(i)
-        )
+        FOREACH (skill IN $skills | MERGE (s:Concept {name: toLower(skill)}) MERGE (u)-[:HAS_SKILL]->(s))
+        FOREACH (interest IN $interests | MERGE (i:Concept {name: toLower(interest)}) MERGE (u)-[:INTERESTED_IN]->(i))
         
+        // 4. Add Projects
         WITH u
         FOREACH (proj IN $projects |
             CREATE (w:Work {
                 id: randomUUID(),
-                title: proj.title, 
-                description: proj.description, 
-                duration: proj.duration,
-                from_date: proj.from_date, 
-                to_date: proj.to_date,
-                tools: proj.tools,
-                type: "Student Project", 
-                created_at: datetime()
+                title: proj.title, from_date: proj.from_date, to_date: proj.to_date,
+                description: proj.description, tools: proj.tools, duration: proj.duration,
+                type: "Student Project", created_at: datetime()
             })
             CREATE (u)-[:WORKED_ON]->(w)
         )
 
+        // 5. Add Publications
         WITH u
         FOREACH (pub IN $publications |
             CREATE (w:Work {
                 id: randomUUID(),
-                title: pub.title, 
-                year: pub.year, 
-                publisher: pub.publisher, 
-                link: pub.link,
-                type: "Publication", 
-                created_at: datetime()
+                title: pub.title, year: pub.year, publisher: pub.publisher, link: pub.link,
+                type: "Publication", created_at: datetime()
             })
             CREATE (u)-[:PUBLISHED]->(w)
         )
@@ -157,12 +216,58 @@ def update_student_profile(
         )
         return {"message": "Profile updated successfully"}
     except Exception as e:
-        print(f"Student Update Error: {e}")
+        print(f"Update Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
 
-# --- D. UPDATE Faculty Profile ---
+# --- ADDED: Get All Faculty List (Supports Map & Status) ---
+@router.get("/faculty")
+def get_all_faculty(search: Optional[str] = None, department: Optional[str] = None):
+    session = db.get_session()
+    try:
+        # Fetch Faculty Nodes with Map Status
+        query = """
+        MATCH (f:Faculty)
+        OPTIONAL MATCH (f)-[:LOCATED_AT]->(c:Cabin)
+        WHERE ($search IS NULL OR toLower(f.name) CONTAINS toLower($search))
+        AND ($dept IS NULL OR f.department = $dept)
+        
+        RETURN f.user_id as id, 
+               f.name as name, 
+               f.department as department, 
+               f.designation as designation, 
+               f.profile_picture as profile_picture,
+               f.current_status as status, 
+               f.status_source as status_source,
+               c.code as cabin_number,
+               c.coordinates as coordinates
+        """
+        
+        result = session.run(query, search=search, dept=department)
+        faculty_list = []
+        
+        for record in result:
+            data = dict(record)
+            # Safe JSON parse for coords
+            if data['coordinates']:
+                try:
+                    data['coordinates'] = json.loads(data['coordinates'])
+                except:
+                    data['coordinates'] = None
+            
+            # Default fallback for status
+            if not data['status']:
+                data['status'] = 'Available'
+                data['status_source'] = 'System'
+
+            faculty_list.append(data)
+                
+        return faculty_list
+    finally:
+        session.close()
+
+# --- D. Faculty Update (FIXED WITH MAP LOGIC) ---
 @router.put("/faculty/profile")
 def update_faculty_profile(
     data: FacultyProfileUpdate, 
@@ -177,6 +282,7 @@ def update_faculty_profile(
     try:
         work_data = [w.dict() for w in data.previous_work]
 
+        # 1. Update Basic Text & Details
         query = """
         MATCH (f:User {user_id: $user_id})
 
@@ -194,17 +300,22 @@ def update_faculty_profile(
             f.pg_details = $pg_details,
             f.phd_details = $phd_details
 
+        // Clear and Recreate Domain Interests
         WITH f
         OPTIONAL MATCH (f)-[r:INTERESTED_IN]->() DELETE r
+        
+        // Clear and Recreate Work
         WITH f
         OPTIONAL MATCH (f)-[:WORKED_ON]->(w:Work) DETACH DELETE w
 
+        // Add Domains
         WITH f
         FOREACH (dom IN $domain_interests | 
             MERGE (c:Concept {name: toLower(dom)}) 
             MERGE (f)-[:INTERESTED_IN]->(c)
         )
 
+        // Add Work
         WITH f
         FOREACH (item IN $previous_work |
             CREATE (w:Work {
@@ -241,6 +352,23 @@ def update_faculty_profile(
             domain_interests=data.domain_interests,
             previous_work=work_data
         )
+
+        # 2. CRITICAL: Update Map Relationship (The "Req")
+        # This moves the pin on the map when you save the profile
+        if data.cabin_number:
+            map_query = """
+            MATCH (f:Faculty {user_id: $uid})
+            
+            // Remove old map link
+            OPTIONAL MATCH (f)-[r:LOCATED_AT]->(:Cabin)
+            DELETE r
+            
+            // Find new cabin by code and link it
+            WITH f
+            MATCH (c:Cabin {code: $code})
+            MERGE (f)-[:LOCATED_AT]->(c)
+            """
+            session.run(map_query, uid=user_id, code=data.cabin_number)
 
         return {"message": "Faculty profile updated successfully"}
 
