@@ -1,21 +1,26 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from typing import Optional, List
 from app.core.database import db
-from datetime import datetime
-import json
+from app.core.security import get_current_user
 import uuid
+import json
+from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(tags=["Locator"])
 
-# --- MODELS ---
+# ==========================================
+# 0. MODELS & DATA
+# ==========================================
+
 class StatusUpdate(BaseModel):
     status: str       # "Available", "Busy", "In Class", "Away"
-    source: str       # "Manual", "Student-QR" (Crowdsourcing)
+    source: str       # "Manual", "Student-QR"
 
 class FutureCheck(BaseModel):
-    datetime: str     # ISO Format: "2024-03-25T14:30:00"
+    datetime: str     # ISO Format: "2024-03-25T14:30:00.000Z"
 
-# --- MOCK TIMETABLE (Fallback) ---
+# Mock Timetable (Fallback when DB is empty)
 MOCK_TIMETABLE = [
     { "day": 'Monday', "start": '09:00', "end": '10:00', "activity": 'Class (CS302)' },
     { "day": 'Monday', "start": '14:00', "end": '16:00', "activity": 'Lab (CS304)' },
@@ -24,11 +29,8 @@ MOCK_TIMETABLE = [
     { "day": 'Friday', "start": '10:00', "end": '11:00', "activity": 'Dept Meeting' },
 ]
 
-# --- NOTIFICATION HELPER ---
-def create_system_notification(tx, user_id, message, type="ALERT"):
-    """
-    Writes a notification directly to the user's node in Neo4j.
-    """
+# --- Helper: Notification ---
+def create_system_notification(tx, target_uid, message, type="ALERT"):
     query = """
     MATCH (u:User {user_id: $uid})
     CREATE (n:Notification {
@@ -41,20 +43,19 @@ def create_system_notification(tx, user_id, message, type="ALERT"):
     })
     CREATE (n)-[:NOTIFIES]->(u)
     """
-    tx.run(query, uid=user_id, nid=str(uuid.uuid4()), message=message, type=type)
+    tx.run(query, uid=target_uid, nid=str(uuid.uuid4()), message=message, type=type)
 
 # ==========================================
-# 1. SEEDING
+# 1. SEEDING (Run once to setup Map)
 # ==========================================
 @router.post("/seed")
 def seed_locator_data():
-    """
-    Migrates the provided SQL/JSON map data into Neo4j.
-    Creates (:Cabin) nodes and links (:Faculty) to them.
-    """
     session = db.get_session()
     try:
-        # 1. Cabin Data
+        # 1. Clean up old connections to prevent duplicates
+        session.run("MATCH (f:Faculty)-[r:LOCATED_AT]->() DELETE r")
+
+        # 2. Define Data
         cabins = [
             {'code': 'AP 9', 'block': 'Block A', 'coords': '{"top": 85, "left": 70}', 'dir': 'Block A (South).'},
             {'code': 'AP 12', 'block': 'Block A', 'coords': '{"top": 85, "left": 65}', 'dir': 'Block A (South).'},
@@ -77,7 +78,6 @@ def seed_locator_data():
             {'code': 'PRINCIPAL', 'block': 'Admin', 'coords': '{"top": 90, "left": 50}', 'dir': 'Principal Office.'},
         ]
 
-        # 2. Faculty Assignments
         faculty_assignments = [
             {'name': 'Dr. Bagavathi C', 'cabin': 'AP 9', 'status': 'Available'},
             {'name': 'Deepika T', 'cabin': 'AP 12', 'status': 'Busy'},
@@ -100,18 +100,15 @@ def seed_locator_data():
             {'name': 'Principal', 'cabin': 'PRINCIPAL', 'status': 'Busy'},
         ]
 
-        # Query 1: Create Cabins
-        cabin_query = """
+        # 3. Create Nodes
+        session.run("""
         UNWIND $cabins AS c
         MERGE (n:Cabin {code: c.code})
-        SET n.block = c.block,
-            n.coordinates = c.coords,
-            n.directions = c.dir
-        """
-        session.run(cabin_query, cabins=cabins)
+        SET n.block = c.block, n.coordinates = c.coords, n.directions = c.dir
+        """, cabins=cabins)
 
-        # Query 2: Link Faculty to Cabins
-        assign_query = """
+        # 4. Link & Update Status
+        session.run("""
         UNWIND $assignments AS a
         MATCH (f:Faculty {name: a.name}) 
         MATCH (c:Cabin {code: a.cabin})
@@ -119,8 +116,7 @@ def seed_locator_data():
         SET f.current_status = a.status,
             f.status_source = 'Initial Seed',
             f.last_status_updated = datetime()
-        """
-        session.run(assign_query, assignments=faculty_assignments)
+        """, assignments=faculty_assignments)
 
         return {"message": "Map data seeded successfully! 🚀"}
     except Exception as e:
@@ -128,16 +124,12 @@ def seed_locator_data():
     finally:
         session.close()
 
-
 # ==========================================
 # 2. LOCATOR & MAP ENDPOINTS
 # ==========================================
 
 @router.get("/faculty/{faculty_id}/location")
 def get_faculty_location(faculty_id: str):
-    """
-    Returns data for the Red Dot Locator: coordinates, directions, and status.
-    """
     session = db.get_session()
     try:
         query = """
@@ -157,8 +149,14 @@ def get_faculty_location(faculty_id: str):
         if not result:
             raise HTTPException(status_code=404, detail="Faculty not found")
         
-        # Parse coordinates JSON string back to object
-        coords = json.loads(result['coords']) if result['coords'] else None
+        # Edge Case: Handle Missing/Bad JSON Coordinates
+        coords = None
+        if result['coords']:
+            try:
+                coords = json.loads(result['coords'])
+            except json.JSONDecodeError:
+                print(f"❌ Error decoding coords for {result['name']}")
+                coords = None 
         
         return {
             "name": result['name'],
@@ -177,19 +175,18 @@ def get_faculty_location(faculty_id: str):
     finally:
         session.close()
 
-
 # ==========================================
 # 3. AVAILABILITY & CROWDSOURCING
 # ==========================================
 
 @router.put("/faculty/{faculty_id}/status")
-def update_status(faculty_id: str, update: StatusUpdate):
-    """
-    Updates status.
-    Source can be 'Manual' (Professor) or 'Student-QR' (Crowdsourced "I'm at the cabin").
-    """
+def update_status(faculty_id: str, update: StatusUpdate, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
     try:
+        # Check permissions handled by `get_current_user` mostly, but logic:
+        # If Manual -> Must be Faculty themselves
+        # If Student-QR -> Must be Student at location
+        
         query = """
         MATCH (f:Faculty {user_id: $fid})
         SET f.current_status = $status,
@@ -202,15 +199,14 @@ def update_status(faculty_id: str, update: StatusUpdate):
         if not result:
             raise HTTPException(status_code=404, detail="Faculty not found")
             
-        return {"message": f"Status updated to {update.status} via {update.source}"}
+        return {"message": f"Status updated to {update.status}"}
     finally:
         session.close()
 
 @router.post("/faculty/{faculty_id}/request-update")
-def request_update(faculty_id: str):
+def request_update(faculty_id: str, current_user: dict = Depends(get_current_user)):
     """
-    Spam Protection Logic:
-    Increments a counter. Notification is only sent if count reaches 3.
+    Fixed: Now requires Login (current_user) so random people can't spam.
     """
     session = db.get_session()
     try:
@@ -227,26 +223,25 @@ def request_update(faculty_id: str):
             
         count = result['count']
         name = result['name']
-        uid = result['uid']
+        target_uid = result['uid']
         
         response_msg = "Request counted. Waiting for more students."
         
         # 2. Check Threshold (3 Requests)
         if count >= 3:
-            # --- REAL NOTIFICATION LOGIC ---
-            print(f"🚨 ALERT: 3 students are looking for Prof. {name}! Sending notification...")
+            print(f"🚨 ALERT: 3 students are looking for Prof. {name}!")
             
-            # Send the notification to Neo4j
+            # Send notification
             session.write_transaction(
                 create_system_notification, 
-                uid, 
-                "⚠️ 3+ Students are requesting your status update.", 
+                target_uid, 
+                f"⚠️ 3+ Students are at your cabin requesting an update.", 
                 "ALERT"
             )
             
             response_msg = f"Notification sent to Prof. {name}!"
             
-            # 3. Reset Count
+            # Reset Count
             session.run("MATCH (f:Faculty {user_id: $fid}) SET f.request_count = 0", fid=faculty_id)
             count = 0 
             
@@ -254,37 +249,53 @@ def request_update(faculty_id: str):
     finally:
         session.close()
 
-
 # ==========================================
 # 4. FUTURE AVAILABILITY CHECKER
 # ==========================================
 
 @router.post("/faculty/{faculty_id}/future")
 def check_future_availability(faculty_id: str, check: FutureCheck):
-    """
-    Checks the MOCK_TIMETABLE for conflicts at a specific future date/time.
-    """
     try:
-        # 1. Parse Input Date
-        dt = datetime.fromisoformat(check.datetime)
-        day_name = dt.strftime("%A")  # e.g., 'Monday'
+        # 1. Edge Case Fix: Remove 'Z' (UTC marker) to prevent Python crash
+        clean_date = check.datetime.replace("Z", "")
+        
+        dt = datetime.fromisoformat(clean_date)
+        day_name = dt.strftime("%A")   # e.g., 'Monday'
         time_str = dt.strftime("%H:%M") # e.g., '14:30'
 
         status = "Available"
         message = "Free according to timetable"
+        found_conflict = False
 
-        # 2. Check against Mock Timetable
+        # 2. Priority 1: Check against Mock Timetable (Specific Events)
         for slot in MOCK_TIMETABLE:
             if slot['day'] == day_name:
+                # String comparison works for ISO times: "09:00" <= "14:30" < "16:00"
                 if slot['start'] <= time_str < slot['end']:
-                    status = "Busy"
-                    message = slot['activity'] # e.g., "Class (CS302)"
+                    status = "In Class"  # Or "Busy"
+                    message = slot['activity']
+                    found_conflict = True
                     break
         
+        # 3. Priority 2: General Availability (Only if NO Class was found)
+        # If they are free from class, check if they are actually at home (Weekend/After Hours)
+        if not found_conflict:
+            # Fix: Use 'in list' instead of 'or string'
+            if day_name in ['Saturday', 'Sunday']:
+                status = "Busy"
+                message = "At Home (Weekend)"
+            
+            # Fix: Check office hours (e.g., 9 AM to 4 PM)
+            elif time_str < "09:00" or time_str > "16:00":
+                status = "Busy"
+                message = "At Home (After Hours)"
+
         return {
             "query_time": f"{day_name}, {time_str}",
             "status": status,
             "message": message
         }
-    except ValueError:
+
+    except ValueError as e:
+         print(f"Date Error: {e}")
          raise HTTPException(status_code=400, detail="Invalid Date Format. Use ISO (YYYY-MM-DDTHH:MM:SS)")

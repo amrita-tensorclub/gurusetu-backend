@@ -3,13 +3,45 @@ from typing import Optional, List
 from app.core.security import get_current_user
 from app.core.database import db
 import uuid
+import json
 from datetime import datetime, date
 from pydantic import BaseModel
 
 router = APIRouter(tags=["Dashboard"]) 
 
+# =========================================================
+# 0. MODELS
+# =========================================================
+
 class ShortlistRequest(BaseModel):
     opening_id: str
+
+class WorkItem(BaseModel):
+    title: str
+    type: str
+    year: str
+    outcome: Optional[str] = None
+    collaborators: Optional[str] = None
+
+# --- NEW: Model for Profile Updates ---
+class FacultyProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    office_hours: Optional[str] = None
+    cabin_block: Optional[str] = None
+    cabin_floor: Optional[str] = None
+    cabin_number: Optional[str] = None
+    ug_details: List[str] = []
+    pg_details: List[str] = []
+    phd_details: List[str] = []
+    domain_interests: List[str] = []
+    previous_work: List[WorkItem] = []
+    current_status: Optional[str] = None
+    status_source: Optional[str] = None
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -20,7 +52,6 @@ def safe_date(date_obj):
     if not date_obj:
         return "N/A"
     try:
-        # If it's a Neo4j DateTime/Date or Python datetime/date
         if hasattr(date_obj, 'isoformat'):
             return date_obj.isoformat().split('T')[0]
         return str(date_obj)
@@ -183,7 +214,7 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
                 "faculty_pic": r["fpic"],
                 "match_score": f"{min(99, 60 + (r['match_count'] * 10))}%",
                 "skills_required": r["skills_required"][:3],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
+                "deadline": safe_date(r["deadline"])
             })
 
         # C. All Openings List
@@ -209,7 +240,7 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
                 "description": r["desc"],
                 "faculty_pic": r["fpic"],
                 "skills_required": r["skills"],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
+                "deadline": safe_date(r["deadline"])
             })
 
         return {
@@ -379,6 +410,9 @@ def get_all_students(search: Optional[str] = None, department: Optional[str] = N
     finally:
         session.close()
 
+# ---------------------------------------------------------------------
+# CRITICAL UPDATE: ALL FACULTY LIST WITH MAP DATA & REAL STATUS
+# ---------------------------------------------------------------------
 @router.get("/student/all-faculty")
 def get_all_faculty(search: Optional[str] = None, department: Optional[str] = None, domain: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     if current_user["role"].lower() != "student":
@@ -392,16 +426,26 @@ def get_all_faculty(search: Optional[str] = None, department: Optional[str] = No
         if department:
             query += " AND f.department = $dept"
             
+        # 1. Fetch Domains
         query += """
         OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)
-        WITH f, collect(c.name) as domains
         """
+        
+        # 2. Fetch Cabin & Map Data
+        query += """
+        OPTIONAL MATCH (f)-[:LOCATED_AT]->(cab:Cabin)
+        WITH f, cab, collect(c.name) as domains
+        """
+        
         if domain:
             query += " WHERE $domain IN domains"
             
+        # 3. Return EVERYTHING needed for the Frontend (ID, Map, Status)
         query += """
         RETURN f.user_id as id, f.name as name, f.department as dept, 
                f.profile_picture as pic, f.designation as designation,
+               f.current_status as status, f.status_source as status_source,
+               cab.code as cabin_number, cab.coordinates as coordinates,
                domains
         ORDER BY f.name ASC
         """
@@ -409,14 +453,26 @@ def get_all_faculty(search: Optional[str] = None, department: Optional[str] = No
         res = session.run(query, search=search, dept=department, domain=domain)
         results = []
         for r in res:
+            # Parse Coordinates safely
+            coords = None
+            if r["coordinates"]:
+                try:
+                    coords = json.loads(r["coordinates"])
+                except:
+                    coords = None
+
             results.append({
-                "faculty_id": r["id"],
+                "id": r["id"],              
+                "faculty_id": r["id"],      
                 "name": r["name"],
                 "department": r["dept"],
                 "designation": r.get("designation", "Professor"),
                 "profile_picture": r["pic"],
                 "domains": r["domains"][:3],
-                "status": "Available"
+                "status": r["status"] or "Available", 
+                "status_source": r["status_source"] or "Manual",
+                "cabin_number": r["cabin_number"],
+                "coordinates": coords
             })
         return results
     finally:
@@ -452,7 +508,7 @@ def get_student_applications(current_user: dict = Depends(get_current_user)):
                 "department": row["dept"] or "General",
                 "faculty_pic": row["pic"],
                 "status": row["status"] or "Pending", 
-                "applied_date": safe_date(row["applied_date"]) # <--- FIXED DATE
+                "applied_date": safe_date(row["applied_date"])
             })
         return applications
     finally:
@@ -530,7 +586,8 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
                f.cabin_block as block, f.cabin_floor as floor, f.cabin_number as cabin_no,
                f.office_hours as office_hours, 
                f.ug_details as ug, f.pg_details as pg, f.phd_details as phd,
-               collect(DISTINCT c.name) as interests
+               collect(DISTINCT c.name) as interests,
+               f.current_status as status 
         """
         profile = session.run(profile_query, fid=faculty_id).single()
         
@@ -552,7 +609,7 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
                 "pg_details": profile["pg"] or [],
                 "phd_details": profile["phd"] or [],
                 "interests": profile["interests"],
-                "availability_status": "Available Now"
+                "availability_status": profile["status"] or "Available" 
             },
             "schedule": profile["office_hours"] or "Mon-Fri 9AM-5PM",
             "openings": [],
@@ -596,6 +653,80 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
 # =========================================================
 # 5. ACTIONS & NOTIFICATIONS
 # =========================================================
+
+# --- NEW: FACULTY PROFILE UPDATE ENDPOINT (THE FIX) ---
+@router.put("/faculty/profile")
+def update_faculty_profile(update: FacultyProfileUpdate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    session = db.get_session()
+    user_id = current_user["user_id"]
+    
+    try:
+        work_data = [w.dict() for w in update.previous_work]
+        
+        # 1. Update Basic Text Properties
+        basic_query = """
+        MATCH (f:Faculty {user_id: $uid})
+        SET f.name = coalesce($name, f.name),
+            f.designation = coalesce($desig, f.designation),
+            f.department = coalesce($dept, f.department),
+            f.email = coalesce($email, f.email),
+            f.phone = coalesce($phone, f.phone),
+            f.profile_picture = coalesce($pic, f.profile_picture),
+            f.office_hours = coalesce($hours, f.office_hours),
+            f.cabin_block = coalesce($block, f.cabin_block),
+            f.cabin_floor = coalesce($floor, f.cabin_floor),
+            f.cabin_number = coalesce($num, f.cabin_number),
+            f.ug_details = $ug,
+            f.pg_details = $pg,
+            f.phd_details = $phd
+        """
+        session.run(basic_query, 
+            uid=user_id,
+            name=update.name, desig=update.designation, dept=update.department,
+            email=update.email, phone=update.phone, pic=update.profile_picture,
+            hours=update.office_hours, block=update.cabin_block, floor=update.cabin_floor,
+            num=update.cabin_number, ug=update.ug_details, pg=update.pg_details, phd=update.phd_details
+        )
+
+        # 2. Update Domain Interests
+        if update.domain_interests is not None:
+            session.run("MATCH (f:Faculty {user_id: $uid})-[r:INTERESTED_IN]->() DELETE r", uid=user_id)
+            for domain in update.domain_interests:
+                session.run("MATCH (f:Faculty {user_id: $uid}) MERGE (c:Concept {name: $domain}) MERGE (f)-[:INTERESTED_IN]->(c)", uid=user_id, domain=domain)
+        
+        # 3. Update Previous Work
+        if update.previous_work:
+            session.run("MATCH (f:Faculty {user_id: $uid})-[r:WORKED_ON]->() DELETE r", uid=user_id)
+            for item in work_data:
+                 session.run("""
+                    MATCH (f:Faculty {user_id: $uid})
+                    CREATE (w:Work {id: randomUUID(), title: $title, type: $type, year: $year, outcome: $outcome, collaborators: $collab, created_at: datetime()})
+                    CREATE (f)-[:WORKED_ON]->(w)
+                 """, uid=user_id, title=item['title'], type=item['type'], year=item['year'], outcome=item['outcome'], collab=item['collaborators'])
+
+        # 4. CRITICAL: Update Map Connection if Cabin Number changed
+        # This fixes the issue where map pins wouldn't move!
+        if update.cabin_number:
+            map_query = """
+            MATCH (f:Faculty {user_id: $uid})
+            OPTIONAL MATCH (f)-[r:LOCATED_AT]->(:Cabin)
+            DELETE r
+            WITH f
+            MATCH (c:Cabin {code: $code})
+            MERGE (f)-[:LOCATED_AT]->(c)
+            """
+            session.run(map_query, uid=user_id, code=update.cabin_number)
+
+        return {"message": "Profile updated successfully"}
+    
+    except Exception as e:
+        print(f"Update Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update profile")
+    finally:
+        session.close()
 
 @router.post("/shortlist/{student_id}")
 def shortlist_student(
@@ -670,7 +801,7 @@ def get_notifications(current_user: dict = Depends(get_current_user)):
                 "message": r["message"],
                 "type": r["type"],
                 "is_read": r["is_read"],
-                "date": safe_date(r["date"]), # <--- FIXED DATE
+                "date": safe_date(r["date"]),
                 "trigger_id": r["trigger_id"],
                 "trigger_role": r["trigger_role"]
             })
@@ -725,7 +856,7 @@ def get_faculty_projects(current_user: dict = Depends(get_current_user)):
                 "title": r["title"],
                 "status": "Active",
                 "domain": "Research",
-                "posted_date": safe_date(r["date"]), # <--- FIXED DATE
+                "posted_date": safe_date(r["date"]),
                 "applicant_count": r["applicant_count"],
                 "shortlisted_count": r["shortlisted_count"]
             })
