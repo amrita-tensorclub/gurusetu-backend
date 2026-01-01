@@ -1,5 +1,4 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
-# We import models from the file you renamed to 'user.py' (singular)
 from app.models.user import StudentProfileUpdate, FacultyProfileUpdate
 from app.core.database import db
 from app.core.security import get_current_user
@@ -28,6 +27,41 @@ async def upload_profile_picture(file: UploadFile = File(...)):
 # --- B. GET Student Profile ---
 @router.get("/student/profile/{user_id}")
 def get_student_profile(user_id: str, current_user: dict = Depends(get_current_user)):
+    return get_generic_profile(user_id)
+
+# --- C. GET Faculty Profile ---
+@router.get("/faculty/profile/{user_id}")
+def get_faculty_profile(user_id: str, current_user: dict = Depends(get_current_user)):
+    session = db.get_session()
+    try:
+        # Fetch Basic User Data + Domain Interests
+        query = """
+        MATCH (u:User {user_id: $uid})
+        OPTIONAL MATCH (u)-[:INTERESTED_IN]->(i:Concept)
+        RETURN u, collect(DISTINCT i.name) as domain_interests
+        """
+        result = session.run(query, uid=user_id).single()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Faculty not found")
+            
+        user_data = dict(result["u"])
+        user_data["domain_interests"] = result["domain_interests"]
+
+        # Fetch Previous Work
+        work_query = """
+        MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work)
+        RETURN w.title as title, w.type as type, w.year as year, 
+               w.outcome as outcome, w.collaborators as collaborators
+        """
+        previous_work = [dict(record) for record in session.run(work_query, uid=user_id)]
+        
+        return {**user_data, "previous_work": previous_work}
+    finally:
+        session.close()
+
+# Helper Function
+def get_generic_profile(user_id):
     session = db.get_session()
     try:
         query = """
@@ -37,35 +71,22 @@ def get_student_profile(user_id: str, current_user: dict = Depends(get_current_u
         RETURN u, collect(DISTINCT s.name) as skills, collect(DISTINCT i.name) as interests
         """
         result = session.run(query, uid=user_id).single()
-        
-        if not result:
-            raise HTTPException(status_code=404, detail="Student not found")
-            
+        if not result: raise HTTPException(status_code=404, detail="User not found")
         user_data = dict(result["u"])
         user_data["skills"] = result["skills"]
         user_data["interests"] = result["interests"]
-
-        # Fetch Projects
-        proj_query = """
-        MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work {type: 'Student Project'})
-        RETURN w.title as title, w.description as description, 
-               w.duration as duration, w.from_date as from_date, w.to_date as to_date, 
-               w.tools as tools
-        """
+        
+        proj_query = "MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work {type: 'Student Project'}) RETURN w.title as title, w.description as description, w.duration as duration, w.from_date as from_date, w.to_date as to_date, w.tools as tools"
         projects = [dict(record) for record in session.run(proj_query, uid=user_id)]
-
-        # Fetch Publications
-        pub_query = """
-        MATCH (u:User {user_id: $uid})-[:PUBLISHED]->(w:Work {type: 'Publication'})
-        RETURN w.title as title, w.year as year, w.publisher as publisher, w.link as link
-        """
+        
+        pub_query = "MATCH (u:User {user_id: $uid})-[:PUBLISHED]->(w:Work {type: 'Publication'}) RETURN w.title as title, w.year as year, w.publisher as publisher, w.link as link"
         publications = [dict(record) for record in session.run(pub_query, uid=user_id)]
         
         return {**user_data, "projects": projects, "publications": publications}
     finally:
         session.close()
 
-# --- C. UPDATE Student Profile ---
+# --- D. UPDATE Student Profile ---
 @router.put("/student/profile")
 def update_student_profile(
     data: StudentProfileUpdate,
@@ -162,7 +183,7 @@ def update_student_profile(
     finally:
         session.close()
 
-# --- D. UPDATE Faculty Profile ---
+# --- E. UPDATE Faculty Profile (FIXED) ---
 @router.put("/faculty/profile")
 def update_faculty_profile(
     data: FacultyProfileUpdate, 
@@ -175,24 +196,30 @@ def update_faculty_profile(
     session = db.get_session()
 
     try:
-        work_data = [w.dict() for w in data.previous_work]
+        raw_work = data.previous_work if data.previous_work else []
+        work_data = []
+        for w in raw_work:
+            item = w.dict()
+            item['outcome'] = item.get('outcome') or ""
+            item['collaborators'] = item.get('collaborators') or ""
+            work_data.append(item)
 
         query = """
         MATCH (f:User {user_id: $user_id})
 
         SET f.name = COALESCE($name, f.name),
             f.profile_picture = $profile_picture,
-            f.email = $email,
-            f.phone = $phone,
-            f.designation = $designation,
-            f.department = $dept,
-            f.office_hours = $office_hours,
-            f.cabin_block = $cabin_block,
-            f.cabin_floor = $cabin_floor,
-            f.cabin_number = $cabin_number,
-            f.ug_details = $ug_details,
-            f.pg_details = $pg_details,
-            f.phd_details = $phd_details
+            f.email = COALESCE($email, f.email),  // <--- FIXED: SAFETY CHECK
+            f.phone = COALESCE($phone, f.phone),
+            f.designation = COALESCE($designation, f.designation),
+            f.department = COALESCE($dept, f.department),
+            f.office_hours = COALESCE($office_hours, f.office_hours),
+            f.cabin_block = COALESCE($cabin_block, f.cabin_block),
+            f.cabin_floor = COALESCE($cabin_floor, f.cabin_floor),
+            f.cabin_number = COALESCE($cabin_number, f.cabin_number),
+            f.ug_details = COALESCE($ug_details, f.ug_details),
+            f.pg_details = COALESCE($pg_details, f.pg_details),
+            f.phd_details = COALESCE($phd_details, f.phd_details)
 
         WITH f
         OPTIONAL MATCH (f)-[r:INTERESTED_IN]->() DELETE r
