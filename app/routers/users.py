@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
-from pydantic import BaseModel
-from typing import List, Optional
+# We import models from the file you renamed to 'user.py' (singular)
+from app.models.user import StudentProfileUpdate, FacultyProfileUpdate
 from app.core.database import db
 from app.core.security import get_current_user
 import shutil
@@ -9,70 +9,6 @@ import os
 from datetime import datetime
 
 router = APIRouter()
-
-# ==========================================
-# 1. MODELS
-# ==========================================
-
-# --- Shared Models ---
-class WorkItem(BaseModel):
-    title: str
-    type: str
-    year: str
-    outcome: str
-    collaborators: str
-
-class ProjectCreate(BaseModel):
-    title: str
-    description: str
-    from_date: str
-    to_date: str
-    tools: List[str]
-
-# Added Publication Model
-class PublicationItem(BaseModel):
-    title: str
-    year: str
-    publisher: Optional[str] = ""
-    link: Optional[str] = ""
-
-# --- Student Profile Model ---
-class StudentProfileUpdate(BaseModel):
-    # Basic Info
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    department: Optional[str] = None
-    batch: Optional[str] = None
-    bio: Optional[str] = None
-    profile_picture: Optional[str] = None
-    
-    # Experience Data
-    skills: List[str] = []
-    interests: List[str] = []
-    projects: List[ProjectCreate] = []
-    publications: List[PublicationItem] = [] # <--- Added this
-
-# --- Faculty Profile Model ---
-class FacultyProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    profile_picture: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    designation: Optional[str] = None
-    department: Optional[str] = None
-    office_hours: Optional[str] = None
-    cabin_block: Optional[str] = None
-    cabin_floor: Optional[str] = None
-    cabin_number: Optional[str] = None
-    ug_details: List[str] = []
-    pg_details: List[str] = []
-    phd_details: List[str] = []
-    domain_interests: List[str] = []
-    previous_work: List[WorkItem] = []
-
-# ==========================================
-# 2. ROUTES
-# ==========================================
 
 # --- A. Upload Picture ---
 @router.post("/upload-profile-picture")
@@ -84,7 +20,8 @@ async def upload_profile_picture(file: UploadFile = File(...)):
         file_path = f"uploads/{unique_filename}"
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"url": f"http://localhost:8000/uploads/{unique_filename}"}
+        # Update this IP if your network changes
+        return {"url": f"http://10.169.201.42:8000/uploads/{unique_filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -93,7 +30,6 @@ async def upload_profile_picture(file: UploadFile = File(...)):
 def get_student_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
     try:
-        # Fetch Basic Info
         query = """
         MATCH (u:User {user_id: $uid})
         OPTIONAL MATCH (u)-[:HAS_SKILL]->(s:Concept)
@@ -112,8 +48,9 @@ def get_student_profile(user_id: str, current_user: dict = Depends(get_current_u
         # Fetch Projects
         proj_query = """
         MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work {type: 'Student Project'})
-        RETURN w.title as title, w.description as description, w.from_date as from_date, 
-               w.to_date as to_date, w.tools as tools
+        RETURN w.title as title, w.description as description, 
+               w.duration as duration, w.from_date as from_date, w.to_date as to_date, 
+               w.tools as tools
         """
         projects = [dict(record) for record in session.run(proj_query, uid=user_id)]
 
@@ -147,7 +84,6 @@ def update_student_profile(
         query = """
         MATCH (u:User {user_id: $user_id})
         
-        // 1. Update Basic Info
         SET u.name = COALESCE($name, u.name),
             u.profile_picture = $profile_picture,
             u.phone = $phone,
@@ -155,7 +91,6 @@ def update_student_profile(
             u.batch = $batch,
             u.bio = $bio
 
-        // 2. Clean Old Relations
         WITH u
         OPTIONAL MATCH (u)-[r:HAS_SKILL|INTERESTED_IN]->() DELETE r
         WITH u
@@ -163,30 +98,42 @@ def update_student_profile(
         WITH u
         OPTIONAL MATCH (u)-[:PUBLISHED]->(oldPub:Work {type: 'Publication'}) DETACH DELETE oldPub
 
-        // 3. Add Skills & Interests
         WITH u
-        FOREACH (skill IN $skills | MERGE (s:Concept {name: toLower(skill)}) MERGE (u)-[:HAS_SKILL]->(s))
-        FOREACH (interest IN $interests | MERGE (i:Concept {name: toLower(interest)}) MERGE (u)-[:INTERESTED_IN]->(i))
+        FOREACH (skill IN $skills | 
+            MERGE (s:Concept {name: toLower(skill)}) 
+            MERGE (u)-[:HAS_SKILL]->(s)
+        )
+        FOREACH (interest IN $interests | 
+            MERGE (i:Concept {name: toLower(interest)}) 
+            MERGE (u)-[:INTERESTED_IN]->(i)
+        )
         
-        // 4. Add Projects
         WITH u
         FOREACH (proj IN $projects |
             CREATE (w:Work {
-                id: apoc.create.uuid(),
-                title: proj.title, from_date: proj.from_date, to_date: proj.to_date,
-                description: proj.description, tools: proj.tools,
-                type: "Student Project", created_at: datetime()
+                id: randomUUID(),
+                title: proj.title, 
+                description: proj.description, 
+                duration: proj.duration,
+                from_date: proj.from_date, 
+                to_date: proj.to_date,
+                tools: proj.tools,
+                type: "Student Project", 
+                created_at: datetime()
             })
             CREATE (u)-[:WORKED_ON]->(w)
         )
 
-        // 5. Add Publications
         WITH u
         FOREACH (pub IN $publications |
             CREATE (w:Work {
-                id: apoc.create.uuid(),
-                title: pub.title, year: pub.year, publisher: pub.publisher, link: pub.link,
-                type: "Publication", created_at: datetime()
+                id: randomUUID(),
+                title: pub.title, 
+                year: pub.year, 
+                publisher: pub.publisher, 
+                link: pub.link,
+                type: "Publication", 
+                created_at: datetime()
             })
             CREATE (u)-[:PUBLISHED]->(w)
         )
@@ -210,23 +157,95 @@ def update_student_profile(
         )
         return {"message": "Profile updated successfully"}
     except Exception as e:
-        print(f"Update Error: {e}")
+        print(f"Student Update Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
 
-# --- D. Faculty Update ---
+# --- D. UPDATE Faculty Profile ---
 @router.put("/faculty/profile")
-def update_faculty_profile(profile_data: FacultyProfileUpdate, current_user: dict = Depends(get_current_user)):
-    # ... (Keep your working Faculty code here) ...
-    # For brevity, reusing the logic you already have working
+def update_faculty_profile(
+    data: FacultyProfileUpdate, 
+    current_user: dict = Depends(get_current_user)
+):
     if current_user["role"].lower() != "faculty":
         raise HTTPException(status_code=403, detail="Access denied")
-    session = db.get_session()
+
     user_id = current_user["user_id"]
+    session = db.get_session()
+
     try:
-        session.run("MATCH (f:User {user_id: $uid})-[r:WORKED_ON|PUBLISHED|LED_PROJECT]->(w:Work) DETACH DELETE w", uid=user_id)
-        # (Insert full faculty query here)
-        return {"status": "success"}
+        work_data = [w.dict() for w in data.previous_work]
+
+        query = """
+        MATCH (f:User {user_id: $user_id})
+
+        SET f.name = COALESCE($name, f.name),
+            f.profile_picture = $profile_picture,
+            f.email = $email,
+            f.phone = $phone,
+            f.designation = $designation,
+            f.department = $dept,
+            f.office_hours = $office_hours,
+            f.cabin_block = $cabin_block,
+            f.cabin_floor = $cabin_floor,
+            f.cabin_number = $cabin_number,
+            f.ug_details = $ug_details,
+            f.pg_details = $pg_details,
+            f.phd_details = $phd_details
+
+        WITH f
+        OPTIONAL MATCH (f)-[r:INTERESTED_IN]->() DELETE r
+        WITH f
+        OPTIONAL MATCH (f)-[:WORKED_ON]->(w:Work) DETACH DELETE w
+
+        WITH f
+        FOREACH (dom IN $domain_interests | 
+            MERGE (c:Concept {name: toLower(dom)}) 
+            MERGE (f)-[:INTERESTED_IN]->(c)
+        )
+
+        WITH f
+        FOREACH (item IN $previous_work |
+            CREATE (w:Work {
+                id: randomUUID(),
+                title: item.title,
+                type: item.type,
+                year: item.year,
+                outcome: item.outcome,
+                collaborators: item.collaborators,
+                created_at: datetime()
+            })
+            CREATE (f)-[:WORKED_ON]->(w)
+        )
+
+        RETURN f.user_id
+        """
+
+        session.run(
+            query,
+            user_id=user_id,
+            name=data.name,
+            profile_picture=data.profile_picture,
+            email=data.email,
+            phone=data.phone,
+            designation=data.designation,
+            dept=data.department,
+            office_hours=data.office_hours,
+            cabin_block=data.cabin_block,
+            cabin_floor=data.cabin_floor,
+            cabin_number=data.cabin_number,
+            ug_details=data.ug_details,
+            pg_details=data.pg_details,
+            phd_details=data.phd_details,
+            domain_interests=data.domain_interests,
+            previous_work=work_data
+        )
+
+        return {"message": "Faculty profile updated successfully"}
+
+    except Exception as e:
+        print(f"Faculty Update Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
