@@ -1,121 +1,92 @@
 import uuid
 import logging
-
 from fastapi import HTTPException
 from app.core.database import db
-from app.core.security import (
-    hash_password,
-    verify_password,
-    create_access_token,
-)
-from app.models.auth import UserRegister, UserLogin
+from app.core.security import hash_password, verify_password, create_access_token
+from app.models.auth import UserRegister, UserLogin, UserVerifyIdentity, UserResetPassword
 from app.services.embedding import generate_embedding
 
 logger = logging.getLogger(__name__)
 
-
 def register_user(user: UserRegister):
     session = db.get_session()
-
     try:
-        # 1. Check if email exists
-        query_check = "MATCH (u:User {email: $email}) RETURN u"
-        result = session.run(query_check, email=user.email).single()
+        clean_email = user.email.strip().lower()
+        clean_password = user.password.strip()
 
-        if result:
-            raise HTTPException(status_code=400, detail="Email already registered")
+        # Check existing
+        result = session.run("MATCH (u:User {email: $email}) RETURN u", email=clean_email).single()
+        if result: raise HTTPException(status_code=400, detail="Email already registered")
 
-        # 2. Hash password & generate ID
-        hashed_pw = hash_password(user.password)
+        hashed_pw = hash_password(clean_password)
         user_id = str(uuid.uuid4())
+        
+        # Safe inputs
+        roll_no = user.roll_no.strip() if user.roll_no else None
+        emp_id = user.employee_id.strip() if user.employee_id else None
+        dept = user.department.strip() if user.department else "General"
 
-        # 3. Validate role
-        role_lower = user.role.lower()
-        if role_lower == "student":
-            role_label = "Student"
-        elif role_lower == "faculty":
-            role_label = "Faculty"
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid role. Must be 'student' or 'faculty'",
-            )
-
-        # 4. Generate embedding (VERY IMPORTANT)
-        profile_text = f"{user.name} {user.role}"
+        profile_text = f"{user.name} {user.role} {dept}"
         embedding = generate_embedding(profile_text)
 
-        # 5. Create user node WITH embedding
-        query_create = f"""
-        CREATE (u:User:{role_label} {{
-            user_id: $user_id,
-            email: $email,
-            password_hash: $password_hash,
-            name: $name,
-            role: $role,
-            roll_no: $roll_no,
-            employee_id: $employee_id,
-            embedding: $embedding,
-            is_active: true
-        }})
-        RETURN u.user_id AS id
-        """
+        role_lower = user.role.lower()
+        if role_lower == "student":
+            query = """
+            CREATE (u:User:Student {
+                user_id: $uid, email: $email, password_hash: $pw, name: $name,
+                role: 'Student', roll_no: $roll, department: $dept, embedding: $emb, is_active: true
+            }) RETURN u.user_id"""
+            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, roll=roll_no, dept=dept, emb=embedding)
+        
+        elif role_lower == "faculty":
+            query = """
+            CREATE (u:User:Faculty {
+                user_id: $uid, email: $email, password_hash: $pw, name: $name,
+                role: 'Faculty', employee_id: $empid, department: $dept, embedding: $emb, is_active: true
+            }) RETURN u.user_id"""
+            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, empid=emp_id, dept=dept, emb=embedding)
 
-        session.run(
-            query_create,
-            user_id=user_id,
-            email=user.email,
-            password_hash=hashed_pw,
-            name=user.name,
-            role=user.role,
-            roll_no=user.roll_no,
-            employee_id=user.employee_id,
-            embedding=embedding,
-        )
-
+        # STABLE FLOW: Just return success message. No Token.
         return {"message": "User registered successfully", "user_id": user_id}
 
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error during user registration")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error",
-        )
-    finally:
-        session.close()
-
+    except HTTPException: raise
+    except Exception as e:
+        logger.exception("Register Error")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally: session.close()
 
 def login_user(user: UserLogin):
     session = db.get_session()
-
     try:
-        query = "MATCH (u:User {email: $email}) RETURN u"
-        result = session.run(query, email=user.email).single()
-
-        if not result:
+        clean_email = user.email.strip().lower()
+        result = session.run("MATCH (u:User {email: $email}) RETURN u", email=clean_email).single()
+        
+        if not result or not verify_password(user.password.strip(), result["u"].get("password_hash", "")):
             raise HTTPException(status_code=400, detail="Invalid email or password")
+            
+        u_role = result["u"].get("role", "student").lower()
+        token = create_access_token(user_id=result["u"]["user_id"], role=u_role)
+        
+        return {"access_token": token, "token_type": "bearer", "role": u_role}
+    finally: session.close()
 
-        user_node = result["u"]
+# Keep these for your features
+def verify_identity(data: UserVerifyIdentity):
+    session = db.get_session()
+    try:
+        email = data.email.strip().lower()
+        id_num = data.id_number.strip()
+        query = "MATCH (u:User {email: $email}) WHERE u.roll_no = $id OR u.employee_id = $id RETURN u"
+        if not session.run(query, email=email, id=id_num).single():
+            raise HTTPException(status_code=400, detail="Verification Failed: Email and ID do not match.")
+        return {"message": "Verified"}
+    finally: session.close()
 
-        if not verify_password(user.password, user_node["password_hash"]):
-            raise HTTPException(status_code=400, detail="Invalid email or password")
-
-        access_token = create_access_token(
-            user_id=user_node["user_id"],
-            role=user_node["role"],
-        )
-
-        return {"access_token": access_token, "token_type": "bearer"}
-
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error during user login")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error",
-        )
-    finally:
-        session.close()
+def reset_password(data: UserResetPassword):
+    session = db.get_session()
+    try:
+        email = data.email.strip().lower()
+        new_pw = hash_password(data.new_password.strip())
+        session.run("MATCH (u:User {email: $email}) SET u.password_hash = $pw", email=email, pw=new_pw)
+        return {"message": "Password updated"}
+    finally: session.close()
