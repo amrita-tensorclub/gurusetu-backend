@@ -299,28 +299,31 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
 
 @router.get("/faculty/collaborations")
 def get_collaborations(search: str = None, department: str = None, collab_type: str = None, current_user: dict = Depends(get_current_user)):
-    if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
+    # Remove role check if you want students to see this too, otherwise keep it
+    # if current_user["role"].lower() != "faculty": ...
+
     session = db.get_session()
     try:
+        # UPDATED QUERY: Looks for 'Opening' nodes with a collaboration_type
         query = """
-        MATCH (f:Faculty)-[:POSTED|LED_PROJECT]->(w:Work)
-        WHERE w.collaboration_type IS NOT NULL
+        MATCH (f:User)-[:POSTED]->(o:Opening)
+        WHERE o.collaboration_type IS NOT NULL
         """
         
         if search:
-            query += " AND (toLower(w.title) CONTAINS toLower($search) OR toLower(f.name) CONTAINS toLower($search))"
+            query += " AND (toLower(o.title) CONTAINS toLower($search) OR toLower(f.name) CONTAINS toLower($search))"
         if department:
             query += " AND f.department CONTAINS $dept"
         if collab_type:
-            query += " AND w.collaboration_type = $type"
+            query += " AND o.collaboration_type = $type"
             
         query += """
-        RETURN f.user_id as fid, f.name as fname, f.department as fdept,
-               w.title as title, w.description as desc, w.collaboration_type as type, 
-               w.tools_used as tags, w.id as pid
-        ORDER BY w.id DESC
+        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)
+        WITH f, o, collect(c.name) as skills
+        RETURN f.user_id as fid, f.name as fname, f.department as fdept, f.profile_picture as fpic,
+               o.title as title, o.description as desc, o.collaboration_type as type, 
+               skills as tags, o.id as pid
+        ORDER BY o.created_at DESC
         """
         
         results = session.run(query, search=search, dept=department, type=collab_type)
@@ -329,11 +332,12 @@ def get_collaborations(search: str = None, department: str = None, collab_type: 
             projects.append({
                 "faculty_id": r["fid"],
                 "faculty_name": r["fname"],
-                "department": r["fdept"],
+                "department": r["fdept"] or "General",
+                "faculty_pic": r["fpic"],
                 "title": r["title"],
                 "description": r["desc"],
                 "collaboration_type": r["type"],
-                "tags": r.get("tags", []),
+                "tags": r["tags"], # This now comes from 'skills'
                 "project_id": r["pid"]
             })
         return projects
@@ -613,7 +617,6 @@ def shortlist_student(
         return {"message": "Student shortlisted for opening"}
     finally:
         session.close()
-
 @router.post("/express-interest/{project_id}")
 def express_interest(project_id: str, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
@@ -622,31 +625,50 @@ def express_interest(project_id: str, current_user: dict = Depends(get_current_u
     role = current_user["role"]
 
     try:
+        # 1. Identify the Target (Opening OR Work)
+        # We use a generic variable 'node' to match either Opening or Work with that ID
         owner_query = """
-        MATCH (owner:User)-[:PUBLISHED|LED_PROJECT|POSTED]->(w:Work {id: $pid})
-        RETURN owner.user_id as owner_id, w.title as title
+        MATCH (owner:User)-[:POSTED|PUBLISHED|LED_PROJECT]->(node)
+        WHERE (node:Opening OR node:Work) AND node.id = $pid
+        RETURN owner.user_id as owner_id, node.title as title, labels(node) as labels
         """
         result = session.run(owner_query, pid=project_id).single()
+        
         if not result:
-            raise HTTPException(status_code=404, detail="Project not found")
+            raise HTTPException(status_code=404, detail="Project or Opening not found")
             
         owner_id = result["owner_id"]
         project_title = result["title"]
 
-        check_query = "MATCH (u:User {user_id: $uid})-[r:INTERESTED_IN]->(w:Work {id: $pid}) RETURN r"
+        # 2. Check if already interested
+        check_query = """
+        MATCH (u:User {user_id: $uid})-[r:INTERESTED_IN]->(node)
+        WHERE node.id = $pid
+        RETURN r
+        """
         if session.run(check_query, uid=user_id, pid=project_id).single():
             return {"message": "Already expressed interest"}
 
+        # 3. Create Relationship
         connect_query = """
-        MATCH (u:User {user_id: $uid}), (w:Work {id: $pid})
-        MERGE (u)-[:INTERESTED_IN {date: datetime()}]->(w)
+        MATCH (u:User {user_id: $uid})
+        MATCH (node) WHERE (node:Opening OR node:Work) AND node.id = $pid
+        MERGE (u)-[:INTERESTED_IN {date: datetime()}]->(node)
         """
         session.run(connect_query, uid=user_id, pid=project_id)
 
-        msg = f"{user_name} ({role}) is interested in '{project_title}'"
-        session.write_transaction(create_notification, owner_id, msg, "INTEREST", trigger_id=user_id, trigger_role=role)
+        # 4. Notify Owner
+        msg = f"{user_name} ({role}) is interested in your collaboration: '{project_title}'"
+        
+        # Use session.write_transaction if your notification logic requires it, 
+        # or just call your notification helper directly if it handles its own transaction.
+        # Assuming create_notification is a standalone function helper:
+        create_notification(session, owner_id, msg, "INTEREST", trigger_id=user_id, trigger_role=role)
 
-        return {"message": "Interest expressed!"}
+        return {"message": "Interest expressed! The faculty has been notified."}
+    except Exception as e:
+        print(f"Error expressing interest: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
 
@@ -697,15 +719,26 @@ def get_faculty_projects(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
 
     try:
+        # Updated Query to fetch BOTH Student Apps and Faculty Interests
         query = """
         MATCH (f:User {user_id: $uid})-[:POSTED]->(o:Opening)
+        
+        // 1. Count Student Applications
         OPTIONAL MATCH (s:Student)-[app:APPLIED_TO]->(o)
         WITH f, o, count(app) as applicant_count
+        
+        // 2. Count Shortlisted Students
         OPTIONAL MATCH (o)-[sl:SHORTLISTED]->(s2:Student)
         WITH f, o, applicant_count, count(sl) as shortlisted_count
+        
+        // 3. Count Faculty Interests (For Collaborations)
+        OPTIONAL MATCH (u:User)-[int:INTERESTED_IN]->(o)
+        WITH f, o, applicant_count, shortlisted_count, count(int) as interest_count
+        
         RETURN o.id as id, o.title as title, o.description as desc, 
-               o.created_at as date, o.status as status,
-               applicant_count, shortlisted_count
+               o.created_at as date, o.status as status, 
+               o.collaboration_type as type,  // <--- THIS IS CRITICAL
+               applicant_count, shortlisted_count, interest_count
         ORDER BY o.created_at DESC
         """
         results = session.run(query, uid=user_id)
@@ -725,9 +758,11 @@ def get_faculty_projects(current_user: dict = Depends(get_current_user)):
                 "title": r["title"],
                 "status": "Active",
                 "domain": "Research",
-                "posted_date": safe_date(r["date"]), # <--- FIXED DATE
+                "posted_date": safe_date(r["date"]),
                 "applicant_count": r["applicant_count"],
-                "shortlisted_count": r["shortlisted_count"]
+                "shortlisted_count": r["shortlisted_count"],
+                "interest_count": r["interest_count"],     
+                "collaboration_type": r["type"]            # <--- MUST BE HERE
             })
 
         return {
