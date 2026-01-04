@@ -1,12 +1,28 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional, List
-from app.core.security import get_current_user
-from app.core.database import db
 import uuid
 from datetime import datetime, date
-from pydantic import BaseModel
 
-router = APIRouter(tags=["Dashboard"]) 
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel
+import numpy as np
+
+from app.core.security import get_current_user
+from app.core.database import db
+from app.services.rag_service import semantic_search_students
+
+# --- OPTIONAL AI IMPORT (Prevents crash if library missing) ---
+try:
+    from app.services.embedding import generate_embedding
+except ImportError:
+    print("WARNING: 'sentence_transformers' or 'app.services.embedding' not found. AI features disabled.")
+    generate_embedding = None
+
+# Initialize Router
+router = APIRouter(tags=["Dashboard"])
+
+# =========================================================
+# DATA MODELS
+# =========================================================
 
 class ShortlistRequest(BaseModel):
     opening_id: str
@@ -16,18 +32,43 @@ class ShortlistRequest(BaseModel):
 # =========================================================
 
 def safe_date(date_obj):
-    """Safely converts Neo4j/Python date objects to ISO string"""
+    """
+    Safely converts Neo4j/Python date objects to ISO string (YYYY-MM-DD).
+    Handles None, Neo4j DateTime, and Python datetime objects.
+    """
     if not date_obj:
         return "N/A"
     try:
-        # If it's a Neo4j DateTime/Date or Python datetime/date
         if hasattr(date_obj, 'isoformat'):
             return date_obj.isoformat().split('T')[0]
         return str(date_obj)
     except:
         return "N/A"
 
+def cosine_similarity(vec_a, vec_b):
+    """
+    Calculates cosine similarity between two vectors.
+    Returns float between 0.0 and 1.0.
+    """
+    if not vec_a or not vec_b:
+        return 0.0
+    try:
+        a = np.array(vec_a)
+        b = np.array(vec_b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+    except Exception as e:
+        print(f"Math Error in Cosine Similarity: {e}")
+        return 0.0
+
 def create_notification(tx, user_id, message, type="INFO", trigger_id=None, trigger_role=None):
+    """
+    Helper to create a notification node in Neo4j.
+    Must be called within an active Neo4j transaction context.
+    """
     query = """
     MATCH (u:User {user_id: $user_id})
     CREATE (n:Notification {
@@ -51,7 +92,7 @@ def create_notification(tx, user_id, message, type="INFO", trigger_id=None, trig
     )
 
 # =========================================================
-# 1. DASHBOARD HOME SCREENS
+# 1. DASHBOARD HOME (FACULTY & STUDENT)
 # =========================================================
 
 @router.get("/faculty/home")
@@ -139,87 +180,120 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
     session = db.get_session()
     
+    # Defaults
+    user_info = {}
+    unread_count = 0
+    recommended_final = []
+    all_openings_data = []
+
     try:
-        # A. User Info & Notification Count
+        # 1. FETCH STUDENT (Skills + Interests)
         user_query = """
         MATCH (u:User {user_id: $user_id}) 
         OPTIONAL MATCH (n:Notification)-[:NOTIFIES]->(u) WHERE n.is_read = false
-        WITH u, count(n) as unread_count
-        RETURN u.name as name, u.roll_no as roll_no, unread_count
+        OPTIONAL MATCH (u)-[:HAS_SKILL]->(s)
+        OPTIONAL MATCH (u)-[:INTERESTED_IN]->(i)
+        RETURN u.name as name, u.roll_no as roll_no,
+               count(n) as unread_count, 
+               collect(DISTINCT s.name) as skills, 
+               collect(DISTINCT i.name) as interests
         """
         user_res = session.run(user_query, user_id=user_id).single()
         
-        user_info = {}
-        unread_count = 0
+        my_capabilities = set()
+        
         if user_res:
             user_info = {"name": user_res["name"], "roll_no": user_res["roll_no"]}
             unread_count = user_res["unread_count"]
+            
+            # Normalize Skills
+            if user_res["skills"]:
+                for s in user_res["skills"]:
+                    if s: my_capabilities.add(str(s).lower().strip())
 
-        # B. Recommended Openings
-        recs_query = """
-        MATCH (s:Student {user_id: $uid})
-        MATCH (o:Opening)
-        OPTIONAL MATCH (f:User)-[:POSTED]->(o)
-        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)<-[:HAS_SKILL]-(s)
-        WITH o, f, count(c) as match_count
-        OPTIONAL MATCH (o)-[:REQUIRES]->(req_skill:Concept)
-        WITH o, f, match_count, collect(req_skill.name) as skills_required
-        
-        RETURN o.id as oid, o.title as title, o.deadline as deadline,
-               f.name as fname, f.department as fdept, f.profile_picture as fpic, 
-               match_count, skills_required
-        ORDER BY match_count DESC, o.created_at DESC
-        LIMIT 5
-        """
-        recs_res = session.run(recs_query, uid=user_id)
-        
-        recommended_openings = []
-        for r in recs_res:
-            recommended_openings.append({
-                "opening_id": r["oid"],
-                "title": r["title"],
-                "faculty_name": r["fname"] or "Faculty",
-                "department": r["fdept"] or "General",
-                "faculty_pic": r["fpic"],
-                "match_score": f"{min(99, 60 + (r['match_count'] * 10))}%",
-                "skills_required": r["skills_required"][:3],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
-            })
+            # Normalize Interests
+            if user_res["interests"]:
+                for i in user_res["interests"]:
+                    if i: my_capabilities.add(str(i).lower().strip())
 
-        # C. All Openings List
-        all_query = """
+        # 2. FETCH OPENINGS & MATCH
+        openings_query = """
         MATCH (o:Opening)
         MATCH (f:User)-[:POSTED]->(o)
-        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)
-        WITH o, f, collect(c.name) as skills
+        OPTIONAL MATCH (o)-[:REQUIRES]->(req)
+        WITH o, f, collect(req.name) as req_skills
         RETURN o.id as oid, o.title as title, o.description as desc, o.deadline as deadline,
-               f.name as fname, f.department as fdept, f.profile_picture as fpic, skills
-        ORDER BY o.created_at DESC 
+               f.name as fname, f.department as fdept, f.profile_picture as fpic, 
+               req_skills
+        ORDER BY o.created_at DESC
         LIMIT 20
         """
-        all_res = session.run(all_query)
+        op_results = session.run(openings_query)
         
-        all_openings = []
-        for r in all_res:
-            all_openings.append({
+        scored_openings = []
+
+        for r in op_results:
+            # Normalize Job Requirements
+            raw_reqs = [x for x in r["req_skills"] if x]
+            normalized_reqs = [str(req).lower().strip() for req in raw_reqs]
+            
+            match_percentage = 0.0
+
+            if normalized_reqs:
+                matches_found = 0
+                for req in normalized_reqs:
+                    if req in my_capabilities:
+                        matches_found += 1
+                
+                # Formula: (Matches / Requirements) * 100
+                if len(normalized_reqs) > 0:
+                    match_percentage = (matches_found / len(normalized_reqs)) * 100.0
+            
+            # Build Object
+            opening_obj = {
                 "opening_id": r["oid"],
                 "title": r["title"],
                 "faculty_name": r["fname"] or "Faculty",
                 "department": r["fdept"] or "General",
-                "description": r["desc"],
                 "faculty_pic": r["fpic"],
-                "skills_required": r["skills"],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
-            })
+                "skills_required": raw_reqs[:3],
+                "description": r["desc"],
+                "deadline": safe_date(r["deadline"]),
+                "match_score": f"{int(match_percentage)}%", 
+                "raw_score": match_percentage
+            }
 
+            scored_openings.append(opening_obj)
+            all_openings_data.append(opening_obj)
+
+        # 3. FILTER RECOMMENDATIONS (Hide 0%)
+        # Filter: Only keep jobs where score > 0
+        filtered_recs = [op for op in scored_openings if op["raw_score"] > 0]
+        
+        # Sort: Highest score first
+        filtered_recs.sort(key=lambda x: x["raw_score"], reverse=True)
+        
+        # Slice: Top 5 only
+        recommended_final = filtered_recs[:5]
+
+    except Exception as e:
+        # Return safe defaults on error
+        print(f"Error in student dashboard: {e}")
         return {
             "user_info": user_info,
-            "unread_count": unread_count,
-            "recommended_openings": recommended_openings,
-            "all_openings": all_openings
+            "unread_count": 0,
+            "recommended_openings": [],
+            "all_openings": []
         }
     finally:
         session.close()
+
+    return {
+        "user_info": user_info,
+        "unread_count": unread_count,
+        "recommended_openings": recommended_final,
+        "all_openings": all_openings_data
+    }
 
 # =========================================================
 # 2. SIDE MENUS
@@ -294,17 +368,13 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
         session.close()
 
 # =========================================================
-# 3. LISTS & SEARCH
+# 3. SEARCH & LISTS (FACULTY/STUDENTS/COLLABS)
 # =========================================================
 
 @router.get("/faculty/collaborations")
 def get_collaborations(search: str = None, department: str = None, collab_type: str = None, current_user: dict = Depends(get_current_user)):
-    # Remove role check if you want students to see this too, otherwise keep it
-    # if current_user["role"].lower() != "faculty": ...
-
     session = db.get_session()
     try:
-        # UPDATED QUERY: Looks for 'Opening' nodes with a collaboration_type
         query = """
         MATCH (f:User)-[:POSTED]->(o:Opening)
         WHERE o.collaboration_type IS NOT NULL
@@ -337,7 +407,7 @@ def get_collaborations(search: str = None, department: str = None, collab_type: 
                 "title": r["title"],
                 "description": r["desc"],
                 "collaboration_type": r["type"],
-                "tags": r["tags"], # This now comes from 'skills'
+                "tags": r["tags"],
                 "project_id": r["pid"]
             })
         return projects
@@ -345,10 +415,31 @@ def get_collaborations(search: str = None, department: str = None, collab_type: 
         session.close()
 
 @router.get("/faculty/all-students")
-def get_all_students(search: Optional[str] = None, department: Optional[str] = None, batch: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+def get_all_students(
+    search: Optional[str] = None, 
+    department: Optional[str] = None, 
+    batch: Optional[str] = None, 
+    current_user: dict = Depends(get_current_user)
+):
     if current_user["role"].lower() != "faculty":
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # A. VECTOR SEARCH (If search term exists)
+    if search:
+        try:
+            results = semantic_search_students(query=search, limit=20)
+            
+            # Local filtering for strict fields
+            if department:
+                results = [r for r in results if r.get('dept') == department]
+            if batch:
+                results = [r for r in results if r.get('batch') == batch]
+                
+            return results 
+        except Exception as e:
+            print(f"Vector search failed, falling back to standard: {e}")
+
+    # B. STANDARD SEARCH (Fallback)
     session = db.get_session()
     try:
         query = "MATCH (s:Student) WHERE s.name IS NOT NULL"
@@ -377,7 +468,8 @@ def get_all_students(search: Optional[str] = None, department: Optional[str] = N
                 "department": r["dept"],
                 "batch": r["batch"],
                 "profile_picture": r["pic"],
-                "skills": r["skills"]
+                "skills": r["skills"],
+                "similarity_score": 0 
             })
         return students
     finally:
@@ -427,7 +519,98 @@ def get_all_faculty(search: Optional[str] = None, department: Optional[str] = No
         session.close()
 
 # =========================================================
-# 4. PROFILE & APPLICATIONS
+# 4. PROJECTS / OPENINGS MANAGEMENT (FACULTY)
+# =========================================================
+
+@router.get("/faculty/projects")
+def get_faculty_projects(current_user: dict = Depends(get_current_user)):
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    session = db.get_session()
+    try:
+        query = """
+        MATCH (u:User {user_id: $user_id})-[:POSTED]->(o:Opening)
+        OPTIONAL MATCH (o)<-[:APPLIED_TO]-(s:User)
+        OPTIONAL MATCH (o)<-[:INTERESTED_IN]-(f:User)
+        
+        WITH o, count(DISTINCT s) as applicant_count, count(DISTINCT f) as interest_count
+        
+        RETURN 
+            o.id as id,
+            o.title as title,
+            o.status as status,
+            o.domain as domain,
+            toString(o.deadline) as deadline,
+            toString(o.created_at) as posted_date,
+            o.collaboration_type as collaboration_type,
+            applicant_count,
+            interest_count
+        ORDER BY posted_date DESC
+        """
+        
+        result = session.run(query, user_id=current_user["user_id"])
+        projects = [dict(record) for record in result]
+        
+        stats = {
+            "active_projects": len([p for p in projects if p.get("status") == "Active"]),
+            "total_applicants": sum(p.get("applicant_count", 0) for p in projects),
+            "total_shortlisted": 0 
+        }
+
+        return {"stats": stats, "projects": projects}
+    except Exception as e:
+        print(f"Error fetching projects: {str(e)}") 
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@router.get("/faculty/projects/{project_id}/applicants")
+def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
+    session = db.get_session()
+    try:
+        query = """
+        MATCH (o:Opening {id: $pid})<-[:APPLIED_TO]-(s:Student)
+        RETURN s.user_id as id, s.name as name, s.roll_no as roll, s.department as dept, s.profile_picture as pic
+        """
+        results = session.run(query, pid=project_id)
+        return [
+            {
+                "student_id": r["id"], 
+                "name": r["name"], 
+                "roll_no": r["roll"], 
+                "department": r["dept"],
+                "profile_picture": r["pic"]
+            } 
+            for r in results
+        ]
+    finally:
+        session.close()
+
+@router.get("/faculty/projects/{project_id}/shortlisted")
+def get_project_shortlisted(project_id: str, current_user: dict = Depends(get_current_user)):
+    session = db.get_session()
+    try:
+        query = """
+        MATCH (o:Opening {id: $pid})-[:SHORTLISTED]->(s:Student)
+        RETURN s.user_id as id, s.name as name, s.roll_no as roll, s.department as dept, s.profile_picture as pic
+        """
+        results = session.run(query, pid=project_id)
+        return [
+            {
+                "student_id": r["id"], 
+                "name": r["name"], 
+                "roll_no": r["roll"], 
+                "department": r["dept"],
+                "profile_picture": r["pic"]
+            } 
+            for r in results
+        ]
+    finally:
+        session.close()
+
+# =========================================================
+# 5. PROFILES & APPLICATIONS
 # =========================================================
 
 @router.get("/student/applications")
@@ -456,7 +639,7 @@ def get_student_applications(current_user: dict = Depends(get_current_user)):
                 "department": row["dept"] or "General",
                 "faculty_pic": row["pic"],
                 "status": row["status"] or "Pending", 
-                "applied_date": safe_date(row["applied_date"]) # <--- FIXED DATE
+                "applied_date": safe_date(row["applied_date"])
             })
         return applications
     finally:
@@ -468,7 +651,6 @@ def get_student_public_profile(student_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=403, detail="Access denied")
 
     session = db.get_session()
-    
     try:
         profile_query = """
         MATCH (s:Student {user_id: $sid})
@@ -524,7 +706,6 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=403, detail="Access denied")
 
     session = db.get_session()
-    
     try:
         profile_query = """
         MATCH (f:User {user_id: $fid})
@@ -598,7 +779,7 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
         session.close()
 
 # =========================================================
-# 5. ACTIONS & NOTIFICATIONS
+# 6. ACTIONS & NOTIFICATIONS
 # =========================================================
 
 @router.post("/shortlist/{student_id}")
@@ -617,6 +798,7 @@ def shortlist_student(
         return {"message": "Student shortlisted for opening"}
     finally:
         session.close()
+
 @router.post("/express-interest/{project_id}")
 def express_interest(project_id: str, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
@@ -626,7 +808,6 @@ def express_interest(project_id: str, current_user: dict = Depends(get_current_u
 
     try:
         # 1. Identify the Target (Opening OR Work)
-        # We use a generic variable 'node' to match either Opening or Work with that ID
         owner_query = """
         MATCH (owner:User)-[:POSTED|PUBLISHED|LED_PROJECT]->(node)
         WHERE (node:Opening OR node:Work) AND node.id = $pid
@@ -659,10 +840,6 @@ def express_interest(project_id: str, current_user: dict = Depends(get_current_u
 
         # 4. Notify Owner
         msg = f"{user_name} ({role}) is interested in your collaboration: '{project_title}'"
-        
-        # Use session.write_transaction if your notification logic requires it, 
-        # or just call your notification helper directly if it handles its own transaction.
-        # Assuming create_notification is a standalone function helper:
         create_notification(session, owner_id, msg, "INTEREST", trigger_id=user_id, trigger_role=role)
 
         return {"message": "Interest expressed! The faculty has been notified."}
@@ -692,7 +869,7 @@ def get_notifications(current_user: dict = Depends(get_current_user)):
                 "message": r["message"],
                 "type": r["type"],
                 "is_read": r["is_read"],
-                "date": safe_date(r["date"]), # <--- FIXED DATE
+                "date": safe_date(r["date"]),
                 "trigger_id": r["trigger_id"],
                 "trigger_role": r["trigger_role"]
             })
@@ -707,100 +884,5 @@ def mark_notification_read(notif_id: str, current_user: dict = Depends(get_curre
         query = "MATCH (n:Notification {id: $nid})-[:NOTIFIES]->(u:User {user_id: $uid}) SET n.is_read = true"
         session.run(query, nid=notif_id, uid=current_user["user_id"])
         return {"message": "Marked as read"}
-    finally:
-        session.close()
-
-
-# backend/app/routers/dashboard.py
-# backend/app/routers/dashboard.py
-
-@router.get("/faculty/projects")
-def get_faculty_projects(current_user: dict = Depends(get_current_user)):
-    if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    session = db.get_session()
-    try:
-        # ✅ FIX: Use 'WITH' to aggregate first, then RETURN the specific columns
-        query = """
-        MATCH (u:User {user_id: $user_id})-[:POSTED]->(o:Opening)
-        
-        OPTIONAL MATCH (o)<-[:APPLIED_TO]-(s:User)
-        OPTIONAL MATCH (o)<-[:INTERESTED_IN]-(f:User)
-        
-        WITH o, count(DISTINCT s) as applicant_count, count(DISTINCT f) as interest_count
-        
-        RETURN 
-            o.id as id,
-            o.title as title,
-            o.status as status,
-            o.domain as domain,
-            toString(o.deadline) as deadline,
-            toString(o.created_at) as posted_date,
-            o.collaboration_type as collaboration_type,
-            applicant_count,
-            interest_count
-        ORDER BY posted_date DESC
-        """
-        
-        result = session.run(query, user_id=current_user["user_id"])
-        projects = [dict(record) for record in result]
-        
-        stats = {
-            "active_projects": len([p for p in projects if p.get("status") == "Active"]),
-            "total_applicants": sum(p.get("applicant_count", 0) for p in projects),
-            "total_shortlisted": 0 
-        }
-
-        return {"stats": stats, "projects": projects}
-        
-    except Exception as e:
-        print(f"Error fetching projects: {str(e)}") 
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
-
-
-@router.get("/faculty/projects/{project_id}/applicants")
-def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
-    session = db.get_session()
-    try:
-        query = """
-        MATCH (o:Opening {id: $pid})<-[:APPLIED_TO]-(s:Student)
-        RETURN s.user_id as id, s.name as name, s.roll_no as roll, s.department as dept, s.profile_picture as pic
-        """
-        results = session.run(query, pid=project_id)
-        return [
-            {
-                "student_id": r["id"], 
-                "name": r["name"], 
-                "roll_no": r["roll"], 
-                "department": r["dept"],
-                "profile_picture": r["pic"]
-            } 
-            for r in results
-        ]
-    finally:
-        session.close()
-
-@router.get("/faculty/projects/{project_id}/shortlisted")
-def get_project_shortlisted(project_id: str, current_user: dict = Depends(get_current_user)):
-    session = db.get_session()
-    try:
-        query = """
-        MATCH (o:Opening {id: $pid})-[:SHORTLISTED]->(s:Student)
-        RETURN s.user_id as id, s.name as name, s.roll_no as roll, s.department as dept, s.profile_picture as pic
-        """
-        results = session.run(query, pid=project_id)
-        return [
-            {
-                "student_id": r["id"], 
-                "name": r["name"], 
-                "roll_no": r["roll"], 
-                "department": r["dept"],
-                "profile_picture": r["pic"]
-            } 
-            for r in results
-        ]
     finally:
         session.close()
