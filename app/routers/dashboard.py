@@ -710,71 +710,56 @@ def mark_notification_read(notif_id: str, current_user: dict = Depends(get_curre
     finally:
         session.close()
 
+
+# backend/app/routers/dashboard.py
+# backend/app/routers/dashboard.py
+
 @router.get("/faculty/projects")
 def get_faculty_projects(current_user: dict = Depends(get_current_user)):
     if current_user["role"].lower() != "faculty":
-        raise HTTPException(status_code=403, detail="Access denied")
-
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
     session = db.get_session()
-    user_id = current_user["user_id"]
-
     try:
-        # Updated Query to fetch BOTH Student Apps and Faculty Interests
+        # ✅ FIX: Use 'WITH' to aggregate first, then RETURN the specific columns
         query = """
-        MATCH (f:User {user_id: $uid})-[:POSTED]->(o:Opening)
+        MATCH (u:User {user_id: $user_id})-[:POSTED]->(o:Opening)
         
-        // 1. Count Student Applications
-        OPTIONAL MATCH (s:Student)-[app:APPLIED_TO]->(o)
-        WITH f, o, count(app) as applicant_count
+        OPTIONAL MATCH (o)<-[:APPLIED_TO]-(s:User)
+        OPTIONAL MATCH (o)<-[:INTERESTED_IN]-(f:User)
         
-        // 2. Count Shortlisted Students
-        OPTIONAL MATCH (o)-[sl:SHORTLISTED]->(s2:Student)
-        WITH f, o, applicant_count, count(sl) as shortlisted_count
+        WITH o, count(DISTINCT s) as applicant_count, count(DISTINCT f) as interest_count
         
-        // 3. Count Faculty Interests (For Collaborations)
-        OPTIONAL MATCH (u:User)-[int:INTERESTED_IN]->(o)
-        WITH f, o, applicant_count, shortlisted_count, count(int) as interest_count
-        
-        RETURN o.id as id, o.title as title, o.description as desc, 
-               o.created_at as date, o.status as status, 
-               o.collaboration_type as type,  // <--- THIS IS CRITICAL
-               applicant_count, shortlisted_count, interest_count
-        ORDER BY o.created_at DESC
+        RETURN 
+            o.id as id,
+            o.title as title,
+            o.status as status,
+            o.domain as domain,
+            toString(o.deadline) as deadline,
+            toString(o.created_at) as posted_date,
+            o.collaboration_type as collaboration_type,
+            applicant_count,
+            interest_count
+        ORDER BY posted_date DESC
         """
-        results = session.run(query, uid=user_id)
         
-        projects = []
-        total_active = 0
-        total_applicants = 0
-        total_shortlisted = 0
+        result = session.run(query, user_id=current_user["user_id"])
+        projects = [dict(record) for record in result]
         
-        for r in results:
-            total_active += 1
-            total_applicants += r["applicant_count"]
-            total_shortlisted += r["shortlisted_count"]
-            
-            projects.append({
-                "id": r["id"],
-                "title": r["title"],
-                "status": "Active",
-                "domain": "Research",
-                "posted_date": safe_date(r["date"]),
-                "applicant_count": r["applicant_count"],
-                "shortlisted_count": r["shortlisted_count"],
-                "interest_count": r["interest_count"],     
-                "collaboration_type": r["type"]            # <--- MUST BE HERE
-            })
-
-        return {
-            "stats": {
-                "active_projects": total_active,
-                "total_applicants": total_applicants,
-                "total_shortlisted": total_shortlisted
-            },
-            "projects": projects
+        stats = {
+            "active_projects": len([p for p in projects if p.get("status") == "Active"]),
+            "total_applicants": sum(p.get("applicant_count", 0) for p in projects),
+            "total_shortlisted": 0 
         }
+
+        return {"stats": stats, "projects": projects}
+        
+    except Exception as e:
+        print(f"Error fetching projects: {str(e)}") 
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
+
 
 @router.get("/faculty/projects/{project_id}/applicants")
 def get_project_applicants(project_id: str, current_user: dict = Depends(get_current_user)):
