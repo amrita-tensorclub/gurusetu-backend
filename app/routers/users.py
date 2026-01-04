@@ -19,8 +19,9 @@ async def upload_profile_picture(file: UploadFile = File(...)):
         file_path = f"uploads/{unique_filename}"
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        # Update this IP if your network changes
-        return {"url": f"http://10.169.201.42:8000/uploads/{unique_filename}"}
+        
+        # ✅ FIX: Use localhost so images load reliably
+        return {"url": f"http://localhost:8000/uploads/{unique_filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -34,7 +35,6 @@ def get_student_profile(user_id: str, current_user: dict = Depends(get_current_u
 def get_faculty_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     session = db.get_session()
     try:
-        # Fetch Basic User Data + Domain Interests
         query = """
         MATCH (u:User {user_id: $uid})
         OPTIONAL MATCH (u)-[:INTERESTED_IN]->(i:Concept)
@@ -48,7 +48,6 @@ def get_faculty_profile(user_id: str, current_user: dict = Depends(get_current_u
         user_data = dict(result["u"])
         user_data["domain_interests"] = result["domain_interests"]
 
-        # Fetch Previous Work
         work_query = """
         MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work)
         RETURN w.title as title, w.type as type, w.year as year, 
@@ -72,10 +71,15 @@ def get_generic_profile(user_id):
         """
         result = session.run(query, uid=user_id).single()
         if not result: raise HTTPException(status_code=404, detail="User not found")
+        
         user_data = dict(result["u"])
         user_data["skills"] = result["skills"]
         user_data["interests"] = result["interests"]
         
+        # ✅ Ensure roll_no is explicitly checked
+        if "roll_no" not in user_data:
+            user_data["roll_no"] = ""
+
         proj_query = "MATCH (u:User {user_id: $uid})-[:WORKED_ON]->(w:Work {type: 'Student Project'}) RETURN w.title as title, w.description as description, w.duration as duration, w.from_date as from_date, w.to_date as to_date, w.tools as tools"
         projects = [dict(record) for record in session.run(proj_query, uid=user_id)]
         
@@ -183,7 +187,7 @@ def update_student_profile(
     finally:
         session.close()
 
-# --- E. UPDATE Faculty Profile (FIXED) ---
+# --- E. UPDATE Faculty Profile ---
 @router.put("/faculty/profile")
 def update_faculty_profile(
     data: FacultyProfileUpdate, 
@@ -209,7 +213,7 @@ def update_faculty_profile(
 
         SET f.name = COALESCE($name, f.name),
             f.profile_picture = $profile_picture,
-            f.email = COALESCE($email, f.email),  // <--- FIXED: SAFETY CHECK
+            f.email = COALESCE($email, f.email),
             f.phone = COALESCE($phone, f.phone),
             f.designation = COALESCE($designation, f.designation),
             f.department = COALESCE($dept, f.department),
