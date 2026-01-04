@@ -94,7 +94,6 @@ def create_notification(tx, user_id, message, type="INFO", trigger_id=None, trig
 # =========================================================
 # 1. DASHBOARD HOME (FACULTY & STUDENT)
 # =========================================================
-
 @router.get("/faculty/home")
 def get_faculty_home(filter: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     if current_user["role"].lower() != "faculty":
@@ -103,74 +102,185 @@ def get_faculty_home(filter: Optional[str] = None, current_user: dict = Depends(
     session = db.get_session()
     user_id = current_user["user_id"]
     
+    # Defaults
+    user_info = {}
+    unread_count = 0
+    recommended_students = []
+    collaborations = []
+    active_openings = []
+
     try:
-        # A. User Info & Notification Count
+        # =========================================================
+        # A. FETCH FACULTY DATA + OPENING REQUIREMENTS
+        # =========================================================
         user_query = """
         MATCH (f:User {user_id: $uid})
-        OPTIONAL MATCH (n:Notification)-[:NOTIFIES]->(f)
-        WHERE n.is_read = false
-        WITH f, count(n) as unread_count
-        RETURN f.name as name, f.department as dept, f.profile_picture as pic, unread_count
+        OPTIONAL MATCH (n:Notification)-[:NOTIFIES]->(f) WHERE n.is_read = false
+        
+        // 1. General Interests
+        OPTIONAL MATCH (f)-[:INTERESTED_IN]->(i:Concept)
+        OPTIONAL MATCH (f)-[:EXPERT_IN]->(e:Concept)
+        
+        // 2. Requirements from Active Openings
+        OPTIONAL MATCH (f)-[:POSTED]->(o:Opening)-[:REQUIRES]->(req:Concept)
+        
+        RETURN f.name as name, f.department as dept, f.profile_picture as pic, 
+               count(DISTINCT n) as unread_count,
+               collect(DISTINCT i.name) as interests,
+               collect(DISTINCT e.name) as expertise,
+               collect(DISTINCT req.name) as opening_requirements
         """
         user_res = session.run(user_query, uid=user_id).single()
         
-        user_info = {
-            "name": user_res["name"] if user_res else current_user.get("name"),
-            "department": user_res["dept"] if user_res else "General",
-            "pic": user_res["pic"] if user_res else None
-        }
-        unread_count = user_res["unread_count"]
+        faculty_keywords = set()
+        faculty_embedding_text = ""
 
-        # B. Recommended Students
-        rec_query = """
-        MATCH (f:User {user_id: $uid, role: "faculty"})
-        OPTIONAL MATCH (f)-[:INTERESTED_IN]->(c:Concept)<-[:HAS_SKILL]-(s:Student)
+        if user_res:
+            user_info = {
+                "name": user_res["name"] if user_res["name"] else current_user.get("name"),
+                "department": user_res["dept"] if user_res["dept"] else "General",
+                "pic": user_res["pic"]
+            }
+            unread_count = user_res["unread_count"]
+            
+            # --- BUILD KEYWORD LIST ---
+            raw_requirements = (user_res["opening_requirements"] or [])
+            raw_interests = (user_res["interests"] or []) + (user_res["expertise"] or [])
+            
+            for r in raw_requirements:
+                if r: faculty_keywords.add(str(r).lower().strip())
+            for k in raw_interests:
+                if k: faculty_keywords.add(str(k).lower().strip())
+
+            # AI Context
+            req_str = ", ".join(raw_requirements)
+            int_str = ", ".join(raw_interests)
+            faculty_embedding_text = f"Professor looking for skills: {req_str}. Interests: {int_str}"
+
+        # =========================================================
+        # B. FETCH STUDENTS & SCORE THEM
+        # =========================================================
+        students_query = """
+        MATCH (s:Student)
         OPTIONAL MATCH (s)-[:HAS_SKILL]->(sk:Concept)
-        """
-        if filter and filter != "All":
-            rec_query += f" WHERE toLower(sk.name) CONTAINS toLower('{filter}') OR toLower(s.department) CONTAINS toLower('{filter}') "
-
-        rec_query += """
-        WITH s, count(DISTINCT c) AS match_count, collect(DISTINCT sk.name)[0..3] AS skills
-        WHERE s IS NOT NULL
-        RETURN s.user_id AS id, s.name AS name, s.department AS dept, s.batch AS batch, 
-               s.profile_picture AS pic, skills, match_count
-        ORDER BY match_count DESC LIMIT 10
-        """
-        rec_results = session.run(rec_query, uid=user_id)
+        OPTIONAL MATCH (s)-[:INTERESTED_IN]->(int:Concept)
         
-        recommended_students = []
-        for r in rec_results:
-            recommended_students.append({
-                "student_id": r["id"], "name": r["name"], "department": r["dept"],
-                "batch": r["batch"], "profile_picture": r["pic"], "matched_skills": r["skills"],
-                "match_score": f"{min(99, 60 + (r['match_count'] * 10))}%" 
-            })
+        WITH s, collect(DISTINCT sk.name) as skills, collect(DISTINCT int.name) as interests
+        RETURN s.user_id as id, s.name as name, s.department as dept, s.batch as batch, 
+               s.profile_picture as pic, skills, interests
+        LIMIT 50
+        """
+        stu_results = session.run(students_query)
+        
+        scored_students = []
+        faculty_vector = []
+        try:
+            if generate_embedding and faculty_embedding_text:
+                faculty_vector = generate_embedding(faculty_embedding_text)
+        except:
+            pass
 
-        # C. Collaborations
+        for s in stu_results:
+            student_skills_raw = (s["skills"] or []) + (s["interests"] or [])
+            student_keywords = {str(k).lower().strip() for k in student_skills_raw if k}
+
+            match_score = 0.0
+            
+            # Exact Match
+            matches_found = 0
+            if faculty_keywords:
+                for fk in faculty_keywords:
+                    if fk in student_keywords:
+                        matches_found += 1
+                    elif any(fk in sk for sk in student_keywords):
+                        matches_found += 0.5 
+                
+                if len(faculty_keywords) > 0:
+                    match_score = (matches_found / len(faculty_keywords)) * 100.0
+
+            # AI Match
+            if match_score < 40 and faculty_vector:
+                try:
+                    student_text = f"Student skills: {', '.join(student_skills_raw)}"
+                    student_vec = generate_embedding(student_text)
+                    if student_vec:
+                        ai_score = cosine_similarity(faculty_vector, student_vec) * 100.0
+                        if ai_score > match_score:
+                            match_score = ai_score
+                except:
+                    pass
+
+            if match_score > 0:
+                scored_students.append({
+                    "student_id": s["id"],
+                    "name": s["name"],
+                    "department": s["dept"] or "General",
+                    "batch": s["batch"] or "N/A",
+                    "profile_picture": s["pic"],
+                    "matched_skills": s["skills"][:3] if s["skills"] else [],
+                    "match_score": f"{int(match_score)}%",
+                    "raw_score": match_score
+                })
+
+        scored_students.sort(key=lambda x: x["raw_score"], reverse=True)
+        recommended_students = scored_students[:10]
+
+        # =========================================================
+        # C. REST OF DASHBOARD (Collaborations FIXED)
+        # =========================================================
+        
+        # ✅ FIX: Fetch 'Opening' details including description, deadline, and skills
         collab_query = """
-        MATCH (f:Faculty)-[:POSTED|LED_PROJECT]->(w:Work)
-        WHERE f.user_id <> $uid AND w.collaboration_type IS NOT NULL
-        RETURN f.user_id as fid, f.name as name, f.department as dept, f.profile_picture as pic, w.title as title, w.collaboration_type as type LIMIT 5
+        MATCH (f:User)-[:POSTED]->(o:Opening)
+        WHERE f.user_id <> $uid AND o.collaboration_type IS NOT NULL
+        OPTIONAL MATCH (o)-[:REQUIRES]->(req:Concept)
+        WITH f, o, collect(req.name) as skills
+        RETURN f.user_id as fid, f.name as name, f.department as dept, f.profile_picture as pic, 
+               o.id as pid, o.title as title, o.description as desc, o.deadline as deadline, 
+               o.collaboration_type as type, skills
+        ORDER BY o.created_at DESC
+        LIMIT 5
         """
         collab_results = session.run(collab_query, uid=user_id)
-        collaborations = [{"faculty_id": c["fid"], "faculty_name": c["name"], "project_title": c["title"]} for c in collab_results]
+        collaborations = []
+        for c in collab_results:
+            collaborations.append({
+                "id": c["pid"], 
+                "faculty_id": c["fid"], 
+                "faculty_name": c["name"], 
+                "faculty_dept": c["dept"] or "General", 
+                "faculty_pic": c["pic"],   
+                "project_title": c["title"], 
+                "description": c["desc"],
+                "deadline": safe_date(c["deadline"]), 
+                "collaboration_type": c["type"],
+                "skills": c["skills"]
+            })
 
-        # D. Active Openings
+        # Active Openings (My own posts)
         openings_query = "MATCH (f:Faculty {user_id: $uid})-[:POSTED]->(o:Opening) RETURN o.id as id, o.title as title ORDER BY o.created_at DESC"
         op_results = session.run(openings_query, uid=user_id)
         active_openings = [{"id": r["id"], "title": r["title"]} for r in op_results]
 
+    except Exception as e:
+        print(f"Error in Faculty Dashboard: {e}")
         return {
             "user_info": user_info,
-            "unread_count": unread_count,
-            "recommended_students": recommended_students,
-            "faculty_collaborations": collaborations,
-            "active_openings": active_openings
+            "unread_count": 0,
+            "recommended_students": [],
+            "faculty_collaborations": [],
+            "active_openings": []
         }
     finally:
         session.close()
 
+    return {
+        "user_info": user_info,
+        "unread_count": unread_count,
+        "recommended_students": recommended_students,
+        "faculty_collaborations": collaborations,
+        "active_openings": active_openings
+    }
 
 @router.get("/student/home")
 def get_student_dashboard(current_user: dict = Depends(get_current_user)):
@@ -187,7 +297,9 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
     all_openings_data = []
 
     try:
+        # =========================================================
         # 1. FETCH STUDENT (Skills + Interests)
+        # =========================================================
         user_query = """
         MATCH (u:User {user_id: $user_id}) 
         OPTIONAL MATCH (n:Notification)-[:NOTIFIES]->(u) WHERE n.is_read = false
@@ -216,9 +328,12 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
                 for i in user_res["interests"]:
                     if i: my_capabilities.add(str(i).lower().strip())
 
-        # 2. FETCH OPENINGS & MATCH
+        # =========================================================
+        # 2. FETCH OPENINGS & MATCH (Student Only)
+        # =========================================================
         openings_query = """
         MATCH (o:Opening)
+        WHERE o.collaboration_type IS NULL  // <--- FIX: Exclude Faculty Collaborations
         MATCH (f:User)-[:POSTED]->(o)
         OPTIONAL MATCH (o)-[:REQUIRES]->(req)
         WITH o, f, collect(req.name) as req_skills
@@ -571,6 +686,8 @@ def get_project_applicants(project_id: str, current_user: dict = Depends(get_cur
     try:
         query = """
         MATCH (o:Opening {id: $pid})<-[:APPLIED_TO]-(s:Student)
+        WHERE NOT (o)-[:SHORTLISTED]->(s) 
+          AND NOT (o)-[:REJECTED]->(s)
         RETURN s.user_id as id, s.name as name, s.roll_no as roll, s.department as dept, s.profile_picture as pic
         """
         results = session.run(query, pid=project_id)
@@ -579,7 +696,7 @@ def get_project_applicants(project_id: str, current_user: dict = Depends(get_cur
                 "student_id": r["id"], 
                 "name": r["name"], 
                 "roll_no": r["roll"], 
-                "department": r["dept"],
+                "department": r["dept"], 
                 "profile_picture": r["pic"]
             } 
             for r in results
@@ -601,7 +718,7 @@ def get_project_shortlisted(project_id: str, current_user: dict = Depends(get_cu
                 "student_id": r["id"], 
                 "name": r["name"], 
                 "roll_no": r["roll"], 
-                "department": r["dept"],
+                "department": r["dept"], 
                 "profile_picture": r["pic"]
             } 
             for r in results
