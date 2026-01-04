@@ -5,7 +5,7 @@ from app.core.database import db
 import uuid
 from datetime import datetime, date
 from pydantic import BaseModel
-
+from app.services.rag_service import semantic_search_students
 router = APIRouter(tags=["Dashboard"]) 
 
 class ShortlistRequest(BaseModel):
@@ -130,97 +130,166 @@ def get_faculty_home(filter: Optional[str] = None, current_user: dict = Depends(
     finally:
         session.close()
 
+import numpy as np
+# Wrap the import in try-except to prevent crash if library is missing
+try:
+    from app.services.embedding import generate_embedding
+except ImportError:
+    print("WARNING: 'sentence_transformers' or 'app.services.embedding' not found. AI features disabled.")
+    generate_embedding = None
+
+# ... (keep your existing imports)
+
+def cosine_similarity(vec_a, vec_b):
+    if not vec_a or not vec_b:
+        return 0.0
+    try:
+        a = np.array(vec_a)
+        b = np.array(vec_b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+    except Exception as e:
+        print(f"Math Error: {e}")
+        return 0.0
 
 @router.get("/student/home")
 def get_student_dashboard(current_user: dict = Depends(get_current_user)):
+    # --- HELPER FUNCTION ---
+    def local_safe_date(date_obj):
+        if not date_obj: return "N/A"
+        try:
+            return date_obj.isoformat().split('T')[0]
+        except:
+            return str(date_obj)
+
     if current_user["role"].lower() != "student":
         raise HTTPException(status_code=403, detail="Access denied")
 
     user_id = current_user["user_id"]
     session = db.get_session()
     
+    # Defaults
+    user_info = {}
+    unread_count = 0
+    recommended_final = []
+    all_openings_data = []
+
     try:
-        # A. User Info & Notification Count
+        # =========================================================
+        # 1. FETCH STUDENT (Skills + Interests)
+        # =========================================================
         user_query = """
         MATCH (u:User {user_id: $user_id}) 
         OPTIONAL MATCH (n:Notification)-[:NOTIFIES]->(u) WHERE n.is_read = false
-        WITH u, count(n) as unread_count
-        RETURN u.name as name, u.roll_no as roll_no, unread_count
+        OPTIONAL MATCH (u)-[:HAS_SKILL]->(s)
+        OPTIONAL MATCH (u)-[:INTERESTED_IN]->(i)
+        RETURN u.name as name, u.roll_no as roll_no,
+               count(n) as unread_count, 
+               collect(DISTINCT s.name) as skills, 
+               collect(DISTINCT i.name) as interests
         """
         user_res = session.run(user_query, user_id=user_id).single()
         
-        user_info = {}
-        unread_count = 0
+        my_capabilities = set()
+        
         if user_res:
             user_info = {"name": user_res["name"], "roll_no": user_res["roll_no"]}
             unread_count = user_res["unread_count"]
+            
+            # Normalize Skills
+            if user_res["skills"]:
+                for s in user_res["skills"]:
+                    if s: my_capabilities.add(str(s).lower().strip())
 
-        # B. Recommended Openings
-        recs_query = """
-        MATCH (s:Student {user_id: $uid})
-        MATCH (o:Opening)
-        OPTIONAL MATCH (f:User)-[:POSTED]->(o)
-        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)<-[:HAS_SKILL]-(s)
-        WITH o, f, count(c) as match_count
-        OPTIONAL MATCH (o)-[:REQUIRES]->(req_skill:Concept)
-        WITH o, f, match_count, collect(req_skill.name) as skills_required
-        
-        RETURN o.id as oid, o.title as title, o.deadline as deadline,
-               f.name as fname, f.department as fdept, f.profile_picture as fpic, 
-               match_count, skills_required
-        ORDER BY match_count DESC, o.created_at DESC
-        LIMIT 5
-        """
-        recs_res = session.run(recs_query, uid=user_id)
-        
-        recommended_openings = []
-        for r in recs_res:
-            recommended_openings.append({
-                "opening_id": r["oid"],
-                "title": r["title"],
-                "faculty_name": r["fname"] or "Faculty",
-                "department": r["fdept"] or "General",
-                "faculty_pic": r["fpic"],
-                "match_score": f"{min(99, 60 + (r['match_count'] * 10))}%",
-                "skills_required": r["skills_required"][:3],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
-            })
+            # Normalize Interests
+            if user_res["interests"]:
+                for i in user_res["interests"]:
+                    if i: my_capabilities.add(str(i).lower().strip())
 
-        # C. All Openings List
-        all_query = """
+        # =========================================================
+        # 2. FETCH OPENINGS & MATCH
+        # =========================================================
+        openings_query = """
         MATCH (o:Opening)
         MATCH (f:User)-[:POSTED]->(o)
-        OPTIONAL MATCH (o)-[:REQUIRES]->(c:Concept)
-        WITH o, f, collect(c.name) as skills
+        OPTIONAL MATCH (o)-[:REQUIRES]->(req)
+        WITH o, f, collect(req.name) as req_skills
         RETURN o.id as oid, o.title as title, o.description as desc, o.deadline as deadline,
-               f.name as fname, f.department as fdept, f.profile_picture as fpic, skills
-        ORDER BY o.created_at DESC 
+               f.name as fname, f.department as fdept, f.profile_picture as fpic, 
+               req_skills
+        ORDER BY o.created_at DESC
         LIMIT 20
         """
-        all_res = session.run(all_query)
+        op_results = session.run(openings_query)
         
-        all_openings = []
-        for r in all_res:
-            all_openings.append({
+        scored_openings = []
+
+        for r in op_results:
+            # Normalize Job Requirements
+            raw_reqs = [x for x in r["req_skills"] if x]
+            normalized_reqs = [str(req).lower().strip() for req in raw_reqs]
+            
+            match_percentage = 0.0
+
+            if normalized_reqs:
+                matches_found = 0
+                for req in normalized_reqs:
+                    if req in my_capabilities:
+                        matches_found += 1
+                
+                # Formula: (Matches / Requirements) * 100
+                if len(normalized_reqs) > 0:
+                    match_percentage = (matches_found / len(normalized_reqs)) * 100.0
+            
+            # Build Object
+            opening_obj = {
                 "opening_id": r["oid"],
                 "title": r["title"],
                 "faculty_name": r["fname"] or "Faculty",
                 "department": r["fdept"] or "General",
-                "description": r["desc"],
                 "faculty_pic": r["fpic"],
-                "skills_required": r["skills"],
-                "deadline": safe_date(r["deadline"]) # <--- FIXED DATE
-            })
+                "skills_required": raw_reqs[:3],
+                "description": r["desc"],
+                "deadline": local_safe_date(r["deadline"]),
+                "match_score": f"{int(match_percentage)}%", 
+                "raw_score": match_percentage
+            }
 
+            scored_openings.append(opening_obj)
+            all_openings_data.append(opening_obj)
+
+        # =========================================================
+        # 3. FILTER RECOMMENDATIONS (Hide 0%)
+        # =========================================================
+        # Filter: Only keep jobs where score > 0
+        filtered_recs = [op for op in scored_openings if op["raw_score"] > 0]
+        
+        # Sort: Highest score first
+        filtered_recs.sort(key=lambda x: x["raw_score"], reverse=True)
+        
+        # Slice: Top 5 only
+        recommended_final = filtered_recs[:5]
+
+    except Exception:
+        # Return safe defaults on error
         return {
             "user_info": user_info,
-            "unread_count": unread_count,
-            "recommended_openings": recommended_openings,
-            "all_openings": all_openings
+            "unread_count": 0,
+            "recommended_openings": [],
+            "all_openings": []
         }
     finally:
         session.close()
 
+    return {
+        "user_info": user_info,
+        "unread_count": unread_count,
+        "recommended_openings": recommended_final,
+        "all_openings": all_openings_data
+    }
 # =========================================================
 # 2. SIDE MENUS
 # =========================================================
@@ -802,5 +871,57 @@ def get_project_shortlisted(project_id: str, current_user: dict = Depends(get_cu
             } 
             for r in results
         ]
+    finally:
+        session.close()
+
+
+@router.get("/faculty/all-students")
+def get_all_students(
+    search: Optional[str] = None, 
+    department: Optional[str] = None, 
+    batch: Optional[str] = None, 
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 1. IF SEARCH EXISTS: Use Vector Search (Semantic)
+    if search:
+        try:
+            # Call your transformer-based search function
+            results = semantic_search_students(query=search, limit=20)
+            
+            # Filter locally if department/batch are also selected (Vectors don't filter strictly)
+            if department:
+                results = [r for r in results if r.get('dept') == department]
+            if batch:
+                # Assuming your semantic function returns 'batch', if not, you might need to fetch it
+                results = [r for r in results if r.get('batch') == batch]
+                
+            return results # This list now includes 'similarity_score'
+        except Exception as e:
+            print(f"Vector search failed, falling back to standard: {e}")
+            # Fallback to standard query below if vector search fails...
+
+    # 2. ELSE: Use Standard Keyword Search (Your existing Neo4j query)
+    session = db.get_session()
+    try:
+        query = "MATCH (s:Student) WHERE s.name IS NOT NULL"
+        # ... (Rest of your existing standard query) ...
+        # ...
+        
+        results = session.run(query, dept=department, batch=batch)
+        students = []
+        for r in results:
+            students.append({
+                "student_id": r["id"],
+                "name": r["name"],
+                "department": r["dept"],
+                "batch": r["batch"],
+                "profile_picture": r["pic"],
+                "skills": r["skills"],
+                "similarity_score": 0 # Standard search has no vector score
+            })
+        return students
     finally:
         session.close()
