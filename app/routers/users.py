@@ -20,7 +20,7 @@ cloudinary.config(
     secure=True
 )
 
-# ✅ PUBLIC ROUTE: No 'Depends(get_current_user)'
+# ✅ FIXED: Removed 'Depends(get_current_user)' so anyone can upload a signup photo
 @router.post("/upload-profile-picture")
 async def upload_profile_picture(file: UploadFile = File(...)):
     try:
@@ -31,13 +31,12 @@ async def upload_profile_picture(file: UploadFile = File(...)):
             transformation=[{"width": 400, "height": 400, "crop": "fill", "gravity": "face"}]
         )
         
-        # 2. Return the secure URL
+        # 2. Return the URL
         return {"url": upload_result.get("secure_url")}
         
     except Exception as e:
         print(f"Cloudinary Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to upload image to cloud")
-    
+        raise HTTPException(status_code=500, detail="Failed to upload image")
 
 # --- B. GET Student Profile ---
 @router.get("/student/profile/{user_id}")

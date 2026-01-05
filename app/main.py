@@ -39,17 +39,17 @@ os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ✅ CORS FIX: Explicitly allow your Netlify domain
+# ... imports ...
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://gurusetu.netlify.app", # Your Live Frontend
-        "https://gurusetu-backend.onrender.com" # Your Live Backend
-    ],
+    allow_origins=["*"], # ✅ TEMPORARY FIX: Allow all origins to stop connection refusals
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ... rest of your code ...
 
 
 @app.get("/")
