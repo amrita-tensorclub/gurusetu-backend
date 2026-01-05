@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.6.0
@@ -6,7 +7,8 @@ neo4j==5.16.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
-sentence-transformers==2.3.1
+torch==2.5.1+cpu
+sentence-transformers==2.6.1
 python-dotenv==1.0.1
 email-validator
 bcrypt==4.0.1
