@@ -25,28 +25,52 @@ def register_user(user: UserRegister):
         roll_no = user.roll_no.strip() if user.roll_no else None
         emp_id = user.employee_id.strip() if user.employee_id else None
         dept = user.department.strip() if user.department else "General"
+        
+        # ✅ FIX: Extract the profile picture from the request
+        # (Default to None if not provided, or an empty string if you prefer)
+        profile_pic = getattr(user, "profile_picture", None) 
 
         profile_text = f"{user.name} {user.role} {dept}"
         embedding = generate_embedding(profile_text)
 
         role_lower = user.role.lower()
+        
         if role_lower == "student":
             query = """
             CREATE (u:User:Student {
-                user_id: $uid, email: $email, password_hash: $pw, name: $name,
-                role: 'Student', roll_no: $roll, department: $dept, embedding: $emb, is_active: true
+                user_id: $uid, 
+                email: $email, 
+                password_hash: $pw, 
+                name: $name,
+                role: 'Student', 
+                roll_no: $roll, 
+                department: $dept, 
+                profile_picture: $pic,  // <--- ADDED THIS FIELD
+                embedding: $emb, 
+                is_active: true
             }) RETURN u.user_id"""
-            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, roll=roll_no, dept=dept, emb=embedding)
+            
+            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, 
+                        roll=roll_no, dept=dept, pic=profile_pic, emb=embedding)
         
         elif role_lower == "faculty":
             query = """
             CREATE (u:User:Faculty {
-                user_id: $uid, email: $email, password_hash: $pw, name: $name,
-                role: 'Faculty', employee_id: $empid, department: $dept, embedding: $emb, is_active: true
+                user_id: $uid, 
+                email: $email, 
+                password_hash: $pw, 
+                name: $name,
+                role: 'Faculty', 
+                employee_id: $empid, 
+                department: $dept, 
+                profile_picture: $pic,  // <--- ADDED THIS FIELD
+                embedding: $emb, 
+                is_active: true
             }) RETURN u.user_id"""
-            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, empid=emp_id, dept=dept, emb=embedding)
+            
+            session.run(query, uid=user_id, email=clean_email, pw=hashed_pw, name=user.name, 
+                        empid=emp_id, dept=dept, pic=profile_pic, emb=embedding)
 
-        # STABLE FLOW: Just return success message. No Token.
         return {"message": "User registered successfully", "user_id": user_id}
 
     except HTTPException: raise

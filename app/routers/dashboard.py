@@ -133,19 +133,24 @@ def get_faculty_home(filter: Optional[str] = None, current_user: dict = Depends(
         ORDER BY matches DESC
         LIMIT 10
         """
+# ... inside get_faculty_home function ...
+
         stu_results = session.run(students_query, f_keywords=faculty_keywords)
         
         recommended_students = []
         for s in stu_results:
             match_percent = (s["matches"] / len(faculty_keywords) * 100) if faculty_keywords else 0
-            recommended_students.append({
-                "student_id": s["id"],
-                "name": s["name"],
-                "department": s["dept"] or "General",
-                "profile_picture": s["pic"],
-                "matched_skills": s["skills"][:3],
-                "match_score": f"{int(match_percent)}%"
-            })
+            
+            # ✅ FIX: Only add students with a score greater than 0
+            if match_percent > 0:
+                recommended_students.append({
+                    "student_id": s["id"],
+                    "name": s["name"],
+                    "department": s["dept"] or "General",
+                    "profile_picture": s["pic"],
+                    "matched_skills": s["skills"][:3],
+                    "match_score": f"{int(match_percent)}%"
+                })
 
         # 3. FETCH COLLABORATIONS (Limit results)
         collab_query = """
@@ -300,7 +305,6 @@ def get_student_dashboard(current_user: dict = Depends(get_current_user)):
 # =========================================================
 # 2. SIDE MENUS
 # =========================================================
-
 @router.get("/student/menu")
 def get_student_side_menu(current_user: dict = Depends(get_current_user)):
     if current_user["role"].lower() != "student":
@@ -310,9 +314,14 @@ def get_student_side_menu(current_user: dict = Depends(get_current_user)):
     session = db.get_session()
     
     try:
+        # ✅ FIX: Fetch BOTH 'profile_picture' and 'pic' (legacy support)
         query = """
         MATCH (u:User {user_id: $user_id}) 
-        RETURN u.name as name, u.roll_no as id, u.department as dept, u.profile_picture as pic
+        RETURN u.name as name, 
+               u.roll_no as id, 
+               u.department as dept, 
+               u.profile_picture as profile_picture,  // <--- ADDED THIS
+               u.pic as pic                           // <--- KEPT LEGACY
         """
         result = session.run(query, user_id=user_id).single()
         
@@ -323,7 +332,8 @@ def get_student_side_menu(current_user: dict = Depends(get_current_user)):
             "name": result["name"],
             "roll_no": result["id"],
             "department": result["dept"],
-            "profile_picture": result["pic"],
+            # Return whichever field has data (prioritize new field)
+            "profile_picture": result["profile_picture"] or result["pic"], 
             "menu_items": [
                 {"label": "Home", "icon": "home", "route": "/dashboard/student"},
                 {"label": "Profile", "icon": "person", "route": "/dashboard/student/profile"},
@@ -343,9 +353,14 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
         
     session = db.get_session()
     try:
+        # ✅ FIX: Fetch 'profile_picture' directly (no rename) AND 'pic' for safety
         query = """
         MATCH (f:Faculty {user_id: $uid})
-        RETURN f.name as name, f.employee_id as empid, f.department as dept, f.profile_picture as pic
+        RETURN f.name as name, 
+               f.employee_id as empid, 
+               f.department as dept, 
+               f.profile_picture as profile_picture, 
+               f.pic as pic
         """
         res = session.run(query, uid=current_user["user_id"]).single()
         
@@ -356,7 +371,10 @@ def get_faculty_menu(current_user: dict = Depends(get_current_user)):
             "name": res["name"],
             "employee_id": res["empid"] or "N/A",
             "department": res["dept"] or "General",
-            "profile_picture": res["pic"],
+            
+            # ✅ FIX: Send the valid URL, checking both fields
+            "profile_picture": res["profile_picture"] or res["pic"], 
+            
             "menu_items": [
                 {"label": "Profile", "icon": "person", "route": "/dashboard/faculty/profile"},
                 {"label": "My Openings", "icon": "folder", "route": "/dashboard/faculty/projects"},
