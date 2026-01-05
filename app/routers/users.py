@@ -23,7 +23,7 @@ cloudinary.config(
 @router.post("/upload-profile-picture")
 async def upload_profile_picture(
     file: UploadFile = File(...), 
-    current_user: dict = Depends(get_current_user) # Get the logged-in user
+    #current_user: dict = Depends(get_current_user) # Get the logged-in user
 ):
     try:
         # 1. Upload to Cloudinary
