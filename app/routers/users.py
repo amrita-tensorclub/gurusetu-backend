@@ -8,23 +8,46 @@ import os
 from datetime import datetime
 
 router = APIRouter()
+import cloudinary
+import cloudinary.uploader
+from app.core.config import settings
 
-# --- A. Upload Picture ---
+# Configure Cloudinary (Move this to your app startup or config)
+cloudinary.config(
+    cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+    api_key=settings.CLOUDINARY_API_KEY,
+    api_secret=settings.CLOUDINARY_API_SECRET,
+    secure=True
+)
+
 @router.post("/upload-profile-picture")
-async def upload_profile_picture(file: UploadFile = File(...)):
+async def upload_profile_picture(
+    file: UploadFile = File(...), 
+    current_user: dict = Depends(get_current_user) # Get the logged-in user
+):
     try:
-        os.makedirs("uploads", exist_ok=True)
-        file_extension = file.filename.split(".")[-1]
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        file_path = f"uploads/{unique_filename}"
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # ✅ FIX: Use localhost so images load reliably
-        return {"url": f"http://localhost:8000/uploads/{unique_filename}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # 1. Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            file.file,
+            folder="guru_setu_profiles",
+            transformation=[{"width": 400, "height": 400, "crop": "fill", "gravity": "face"}]
+        )
+        secure_url = upload_result.get("secure_url")
 
+        # 2. SAVE TO NEO4J (Crucial!)
+        session = db.get_session()
+        query = """
+        MATCH (u:User {user_id: $uid})
+        SET u.profile_picture = $url
+        RETURN u.profile_picture as new_pic
+        """
+        session.run(query, uid=current_user["user_id"], url=secure_url)
+        session.close()
+
+        return {"url": secure_url}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 # --- B. GET Student Profile ---
 @router.get("/student/profile/{user_id}")
 def get_student_profile(user_id: str, current_user: dict = Depends(get_current_user)):

@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     
     OPENAI_API_KEY: Optional[str] = None  
     
+    CLOUDINARY_CLOUD_NAME: str
+    CLOUDINARY_API_KEY: str
+    CLOUDINARY_API_SECRET: str
+    
     class Config:
         env_file = ".env"
         extra = "ignore" 
