@@ -38,16 +38,20 @@ os.makedirs("uploads", exist_ok=True)
 # 2. Mount static files (This line caused the error before)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# ✅ CORS FIX: Explicitly allow your Netlify domain
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://gurusetu.netlify.app" # ✅ Use your specific Netlify URL
+        "https://gurusetu.netlify.app", # Your Live Frontend
+        "https://gurusetu-backend.onrender.com" # Your Live Backend
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 @app.get("/")
 def read_root():
     return {"message": "Guru Setu Backend is Running 🚀"}

@@ -20,11 +20,9 @@ cloudinary.config(
     secure=True
 )
 
+# ✅ PUBLIC ROUTE: No 'Depends(get_current_user)'
 @router.post("/upload-profile-picture")
-async def upload_profile_picture(
-    file: UploadFile = File(...) 
-    # REMOVED: Depends(get_current_user) to allow signup uploads
-):
+async def upload_profile_picture(file: UploadFile = File(...)):
     try:
         # 1. Upload to Cloudinary
         upload_result = cloudinary.uploader.upload(
@@ -33,8 +31,7 @@ async def upload_profile_picture(
             transformation=[{"width": 400, "height": 400, "crop": "fill", "gravity": "face"}]
         )
         
-        # 2. Return the URL to the frontend
-        # The frontend will then include this URL in the final /auth/register call
+        # 2. Return the secure URL
         return {"url": upload_result.get("secure_url")}
         
     except Exception as e:
