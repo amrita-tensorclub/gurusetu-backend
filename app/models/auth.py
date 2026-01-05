@@ -19,6 +19,7 @@ class UserRegister(BaseModel):
 
     # REMOVED: The custom email validator is gone.
     # EmailStr (from pydantic) will still ensure it looks like "user@domain.com"
+    profile_picture: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
