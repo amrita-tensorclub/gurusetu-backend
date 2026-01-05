@@ -22,8 +22,8 @@ cloudinary.config(
 
 @router.post("/upload-profile-picture")
 async def upload_profile_picture(
-    file: UploadFile = File(...), 
-    #current_user: dict = Depends(get_current_user) # Get the logged-in user
+    file: UploadFile = File(...) 
+    # REMOVED: Depends(get_current_user) to allow signup uploads
 ):
     try:
         # 1. Upload to Cloudinary
@@ -32,22 +32,16 @@ async def upload_profile_picture(
             folder="guru_setu_profiles",
             transformation=[{"width": 400, "height": 400, "crop": "fill", "gravity": "face"}]
         )
-        secure_url = upload_result.get("secure_url")
-
-        # 2. SAVE TO NEO4J (Crucial!)
-        session = db.get_session()
-        query = """
-        MATCH (u:User {user_id: $uid})
-        SET u.profile_picture = $url
-        RETURN u.profile_picture as new_pic
-        """
-        session.run(query, uid=current_user["user_id"], url=secure_url)
-        session.close()
-
-        return {"url": secure_url}
+        
+        # 2. Return the URL to the frontend
+        # The frontend will then include this URL in the final /auth/register call
+        return {"url": upload_result.get("secure_url")}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        print(f"Cloudinary Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload image to cloud")
+    
+
 # --- B. GET Student Profile ---
 @router.get("/student/profile/{user_id}")
 def get_student_profile(user_id: str, current_user: dict = Depends(get_current_user)):
