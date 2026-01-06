@@ -38,17 +38,18 @@ os.makedirs("uploads", exist_ok=True)
 # 2. Mount static files (This line caused the error before)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# ✅ CORS FIX: Explicitly allow your Netlify domain
-# ... imports ...
+origins = [
+    "http://localhost:3000",                   # For local development
+    "https://gurusetu.netlify.app",            # 👈 ADD THIS LINE (Your deployed frontend)
+    os.getenv("FRONTEND_URL")                  # Optional: Good for flexibility via Render Dashboard
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # ✅ TEMPORARY FIX: Allow all origins to stop connection refusals
+    allow_origins=origins, # ✅ Updated origins
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
 )
-
 # ... rest of your code ...
 
 
