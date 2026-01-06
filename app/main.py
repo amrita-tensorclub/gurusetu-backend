@@ -38,20 +38,20 @@ os.makedirs("uploads", exist_ok=True)
 # 2. Mount static files (This line caused the error before)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# ✅ DEFINING ALLOWED ORIGINS
 origins = [
-    "http://localhost:3000",                   # For local development
-    "https://gurusetu.netlify.app",            # 👈 ADD THIS LINE (Your deployed frontend)
-    os.getenv("FRONTEND_URL")                  # Optional: Good for flexibility via Render Dashboard
+    "http://localhost:3000",
+    "https://gurusetu.netlify.app",  # 👈 Make sure there is NO slash at the end
 ]
 
+# Add the middleware with specific settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # ✅ Updated origins
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers (Authorization, etc.)
 )
-# ... rest of your code ...
-
 
 @app.get("/")
 def read_root():
