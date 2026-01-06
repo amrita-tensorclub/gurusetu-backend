@@ -10,6 +10,17 @@ from app.core.security import get_current_user
 from app.core.database import db
 from app.services.rag_service import semantic_search_students
 
+
+class OpeningCreate(BaseModel):
+    title: str
+    description: str
+    required_skills: List[str]
+    expected_duration: str
+    target_years: List[str]
+    min_cgpa: str  # Accepting as string to be safe ("8.0")
+    deadline: str
+    collaboration_type: Optional[str] = None
+
 # --- OPTIONAL AI IMPORT (Prevents crash if library missing) ---
 try:
     from app.services.embedding import generate_embedding
@@ -766,9 +777,12 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
             "previous_work": []
         }
 
+# ... inside get_faculty_public_profile ...
+
+        # ✅ FIX: Fetch 'collaboration_type' from the database
         openings_query = """
         MATCH (f:User {user_id: $fid})-[:POSTED]->(o:Opening)
-        RETURN o.id as id, o.title as title, o.description as desc
+        RETURN o.id as id, o.title as title, o.description as desc, o.collaboration_type as type
         ORDER BY o.created_at DESC
         """
         openings = session.run(openings_query, fid=faculty_id)
@@ -776,9 +790,12 @@ def get_faculty_public_profile(faculty_id: str, current_user: dict = Depends(get
             response_data["openings"].append({
                 "id": o["id"],
                 "title": o["title"],
-                "type": "Project Opening",
+                # ✅ Pass the type to frontend (default to 'Student Project' if null)
+                "type": o["type"] or "Student Project", 
                 "description": o["desc"]
             })
+
+# ... rest of the function ...
 
         work_query = """
         MATCH (f:User {user_id: $fid})-[:WORKED_ON|PUBLISHED|LED_PROJECT]->(w:Work)
@@ -906,5 +923,68 @@ def mark_notification_read(notif_id: str, current_user: dict = Depends(get_curre
         query = "MATCH (n:Notification {id: $nid})-[:NOTIFIES]->(u:User {user_id: $uid}) SET n.is_read = true"
         session.run(query, nid=notif_id, uid=current_user["user_id"])
         return {"message": "Marked as read"}
+    finally:
+        session.close()
+
+
+@router.post("/faculty/opening")
+def create_opening(opening: OpeningCreate, current_user: dict = Depends(get_current_user)):
+    # 1. Verify Role
+    if current_user["role"].lower() != "faculty":
+        raise HTTPException(status_code=403, detail="Only faculty can post openings")
+
+    session = db.get_session()
+    user_id = current_user["user_id"]
+    opening_id = str(uuid.uuid4())
+    
+    try:
+        # 2. Cypher Query with collaboration_type
+        query = """
+        MATCH (f:User {user_id: $uid})
+        CREATE (o:Opening {
+            id: $oid,
+            title: $title,
+            description: $desc,
+            duration: $duration,
+            min_cgpa: $cgpa,
+            deadline: $deadline,
+            created_at: datetime(),
+            status: 'Active',
+            collaboration_type: $collab_type  // ✅ SAVING THE TYPE
+        })
+        MERGE (f)-[:POSTED]->(o)
+        
+        // 3. Link Skills
+        FOREACH (skill_name IN $skills |
+            MERGE (sk:Concept {name: toLower(skill_name)})
+            MERGE (o)-[:REQUIRES]->(sk)
+        )
+        
+        // 4. Link Target Years
+        FOREACH (year IN $years |
+            SET o.target_years = coalesce(o.target_years, []) + year
+        )
+        
+        RETURN o.id as id
+        """
+        
+        session.run(query, 
+            uid=user_id,
+            oid=opening_id,
+            title=opening.title,
+            desc=opening.description,
+            duration=opening.expected_duration,
+            cgpa=opening.min_cgpa,
+            deadline=opening.deadline,
+            skills=opening.required_skills,
+            years=opening.target_years,
+            collab_type=opening.collaboration_type # ✅ Passing the value
+        )
+        
+        return {"message": "Opening created successfully", "id": opening_id}
+        
+    except Exception as e:
+        print(f"🔥 Error creating opening: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         session.close()
