@@ -1,25 +1,35 @@
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from typing import Optional
+import re
 
 class UserRegister(BaseModel):
-    email: EmailStr
-    password: str
     name: str
-    role: str
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+    role: str  # 'student' or 'faculty'
+    department: Optional[str] = None
+    
+    # Specific IDs
     roll_no: Optional[str] = None
     employee_id: Optional[str] = None
-    department: Optional[str] = None
+    
+    profile_picture: Optional[str] = None 
 
-    # 1. Simple Password Validation (Length Only)
-    @validator('password')
-    def validate_password(cls, v):
-        if len(v) < 6:
-            raise ValueError('Password must be at least 6 characters long')
-        return v
+    # ✅ VALIDATOR: Enforce Email Domain based on Role
+    @model_validator(mode='after')
+    def validate_email_role_match(self):
+        email = self.email.lower()
+        role = self.role.lower()
 
-    # REMOVED: The custom email validator is gone.
-    # EmailStr (from pydantic) will still ensure it looks like "user@domain.com"
-    profile_picture: Optional[str] = None
+        if role == "faculty":
+            if not email.endswith("@cb.amrita.edu"):
+                raise ValueError("Faculty email must end with @amrita.edu")
+        
+        elif role == "student":
+            if not email.endswith("@cb.students.amrita.edu"):
+                raise ValueError("Student email must end with @cb.students.amrita.edu")
+        
+        return self
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -27,21 +37,21 @@ class UserLogin(BaseModel):
 
 class Token(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str
     role: str
 
-# --- New Models for Forgot Password ---
 class UserVerifyIdentity(BaseModel):
     email: EmailStr
+    id_number: str
     role: str
-    id_number: str # Roll No or Employee ID
 
 class UserResetPassword(BaseModel):
     email: EmailStr
     new_password: str
-    
-    @validator('new_password')
-    def validate_new_password(cls, v):
+
+    # ✅ FIX: Ensure password length check uses the correct validator
+    @field_validator('new_password')
+    def password_length(cls, v):
         if len(v) < 6:
             raise ValueError('Password must be at least 6 characters long')
         return v
