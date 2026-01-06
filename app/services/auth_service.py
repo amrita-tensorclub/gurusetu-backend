@@ -83,15 +83,27 @@ def login_user(user: UserLogin):
     session = db.get_session()
     try:
         clean_email = user.email.strip().lower()
+        
+        # Fetch user
         result = session.run("MATCH (u:User {email: $email}) RETURN u", email=clean_email).single()
         
+        # Check if user exists and password matches
         if not result or not verify_password(user.password.strip(), result["u"].get("password_hash", "")):
             raise HTTPException(status_code=400, detail="Invalid email or password")
             
-        u_role = result["u"].get("role", "student").lower()
-        token = create_access_token(user_id=result["u"]["user_id"], role=u_role)
+        # ✅ Get the actual role from the database
+        db_role = result["u"].get("role", "").lower()
         
-        return {"access_token": token, "token_type": "bearer", "role": u_role}
+        # Generate Token
+        token = create_access_token(user_id=result["u"]["user_id"], role=db_role)
+        
+        # Return role so frontend can verify context
+        return {
+            "access_token": token, 
+            "token_type": "bearer", 
+            "role": db_role,  # Sending this allows frontend to block mismatches
+            "user_id": result["u"]["user_id"]
+        }
     finally: session.close()
 
 # Keep these for your features
